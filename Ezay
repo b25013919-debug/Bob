@@ -1,0 +1,3065 @@
+--[[
+    ╔═══════════════════════════════════════════╗
+    ║   C L A U D E   •   Blox Strike Edition   ║
+    ╚═══════════════════════════════════════════╝
+    Для Delta Executor (Android) и ПК-экзекьюторов.
+
+    Что внутри:
+      • Интро + выбор устройства (Телефон / ПК) + лоадер (assets / functions)
+      • Аимбот: камера или мышь, плавность, FOV-круг, wall check, team check,
+        предикт, липкая цель, выбор части тела, кнопка AIM для телефона
+      • Триггербот
+      • ESP на обычных GUI/Highlight (БЕЗ Drawing API): боксы, ники, HP, дистанция,
+        трассеры, чамсы, радар
+      • Визуал: свой прицел, FOV камеры, Fullbright, без тумана, HUD (FPS/пинг)
+      • Конфиг сохраняется в файл, повторный запуск чистит старую копию
+]]
+
+-- ============================================================
+-- 0. ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА
+-- ============================================================
+local env = (getgenv and getgenv()) or _G
+if env.ClaudeCleanup then
+    pcall(env.ClaudeCleanup)
+    task.wait(0.15)
+end
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+-- ============================================================
+-- 1. СЕРВИСЫ И ОБЩЕЕ СОСТОЯНИЕ
+-- ============================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local Stats = game:GetService("Stats")
+local MarketplaceService = game:GetService("MarketplaceService")
+local TeleportService = game:GetService("TeleportService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+local Alive = true                    -- флаг работы (для циклов)
+local Conns, Roots, AccentHooks = {}, {}, {}
+
+local function track(c)               -- запоминаем коннект для очистки
+    Conns[#Conns + 1] = c
+    return c
+end
+
+local function getCamera()
+    return Workspace.CurrentCamera
+end
+
+-- Возможности экзекьютора
+local Cap = {
+    Executor = "Unknown",
+    mousemoverel = type(mousemoverel) == "function",
+    mouse1click = type(mouse1click) == "function",
+    files = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function",
+    gethui = type(gethui) == "function",
+}
+pcall(function()
+    if identifyexecutor then Cap.Executor = tostring((identifyexecutor())) end
+end)
+
+local VIM, VirtualUser
+pcall(function() VIM = game:GetService("VirtualInputManager") end)
+pcall(function() VirtualUser = game:GetService("VirtualUser") end)
+
+-- ============================================================
+-- 2. ТЕМА И НАСТРОЙКИ
+-- ============================================================
+local Palette = {
+    { "Фиолет", Color3.fromRGB(150, 95, 255) },
+    { "Голубой", Color3.fromRGB(70, 175, 255) },
+    { "Красный", Color3.fromRGB(255, 70, 85) },
+    { "Зелёный", Color3.fromRGB(70, 230, 130) },
+    { "Оранж", Color3.fromRGB(255, 160, 60) },
+    { "Розовый", Color3.fromRGB(255, 100, 200) },
+    { "Белый", Color3.fromRGB(240, 240, 250) },
+}
+local PaletteOptions = {}
+for i, p in ipairs(Palette) do PaletteOptions[i] = { i, p[1] } end
+
+local function colorOf(i)
+    return (Palette[i] and Palette[i][2]) or Palette[1][2]
+end
+
+local Theme = {
+    BG = Color3.fromRGB(14, 14, 21),
+    Panel = Color3.fromRGB(20, 20, 30),
+    Elem = Color3.fromRGB(29, 29, 43),
+    Text = Color3.fromRGB(236, 236, 246),
+    Sub = Color3.fromRGB(150, 150, 172),
+    Accent = Palette[1][2],
+}
+
+-- Настройки по умолчанию (всё — простые значения, чтобы писалось в JSON)
+local S = {
+    Device = "auto",
+    Accent = 1,
+    Aim = {
+        Enabled = false, Mode = "Hold", Key = "MouseButton2", Part = "Head",
+        Method = "Camera", Smooth = 30, FOV = 180, ShowFOV = true,
+        TeamCheck = true, WallCheck = true, Sticky = true, Predict = 8,
+        MaxDist = 1500, ShowButton = true,
+        Type = "Normal", Priority = "Cross", RageFire = true, FlickDelay = 150,
+        PredictMode = "Off", YOffset = 0, ShowDot = false, Precise = true,
+        Targets = "Players",
+    },
+    Trigger = { Enabled = false, Delay = 70 },
+    ESP = {
+        Enabled = false, Box = true, Name = true, Health = true, Distance = true,
+        Tracers = false, Chams = true, Outline = true, TeamCheck = true, MaxDist = 2500, Color = 3,
+        Targets = "Players",
+    },
+    Misc = {
+        Radar = false, RadarRange = 150, Crosshair = false, CrossSize = 8,
+        FOVOn = false, FOV = 90, Fullbright = false, NoFog = false,
+        AntiAFK = true, HUD = false,
+        Bhop = false, BhopMode = "Always",
+        ThirdPerson = false, TPDist = 12,
+        Sky = "Off",
+        HandsMode = "Off", HandsMat = "Default", HandsColor = 2, HandsTrans = 0.3,
+        Aura = false, AuraParticles = true,
+        BTracers = false, BTracerWho = "All", BTracerRainbow = false, BTracerTime = 0.8,
+        BhopJump = "Humanoid", BhopBoost = true, BhopSpeed = 32,
+        Speed = false, SpeedMode = "CFrame", SpeedValue = 32,
+        InfJump = false, Noclip = false, Fly = false, FlySpeed = 60,
+        ShotSound = "Off", SoundVol = 1.5, CustomSoundId = "", MuteGun = false,
+        Hitmarker = false, HitSound = "Off",
+        DbgModels = false, DbgHitbox = false,
+    },
+}
+
+local CONFIG_FILE = "Claude_BloxStrike.json"
+local configLoaded = false
+
+local function deepMerge(dst, src)
+    for k, v in pairs(src) do
+        if type(v) == "table" and type(dst[k]) == "table" then
+            deepMerge(dst[k], v)
+        elseif type(dst[k]) == type(v) then
+            dst[k] = v
+        end
+    end
+end
+
+local function loadConfig()
+    if not Cap.files then return end
+    local ok, data = pcall(function()
+        if isfile(CONFIG_FILE) then
+            return HttpService:JSONDecode(readfile(CONFIG_FILE))
+        end
+    end)
+    if ok and type(data) == "table" then
+        deepMerge(S, data)
+        configLoaded = true
+    end
+end
+
+local saveQueued = false
+local function saveConfig()
+    if not Cap.files or saveQueued then return end
+    saveQueued = true
+    task.delay(1.5, function()
+        saveQueued = false
+        pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(S)) end)
+    end)
+end
+
+pcall(loadConfig)
+Theme.Accent = colorOf(S.Accent)
+
+-- Параметры интерфейса под устройство
+local Dev = {}
+local function applyDevice(kind)
+    if kind == "pc" then
+        Dev = { kind = "pc", row = 36, txt = 14, W = 660, H = 420, side = 130, top = 40, btn = 44, cyc = 120 }
+    else
+        Dev = { kind = "phone", row = 46, txt = 15, W = 640, H = 330, side = 118, top = 44, btn = 56, cyc = 124 }
+    end
+end
+local suggested = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and "phone" or "pc"
+applyDevice(suggested)
+
+-- ============================================================
+-- 3. ПОМОЩНИКИ ДЛЯ GUI
+-- ============================================================
+local function new(class, props, kids)
+    local o = Instance.new(class)
+    local parent
+    if props then
+        for k, v in pairs(props) do
+            if k == "Parent" then parent = v else o[k] = v end
+        end
+    end
+    if kids then
+        for _, k in ipairs(kids) do k.Parent = o end
+    end
+    if parent then o.Parent = parent end
+    return o
+end
+
+local function corner(r)
+    return new("UICorner", { CornerRadius = UDim.new(0, r) })
+end
+
+local function stroke(color, thick, trans)
+    return new("UIStroke", {
+        Color = color, Thickness = thick or 1, Transparency = trans or 0,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    })
+end
+
+local function tween(o, t, props, style, dir)
+    local tw = TweenService:Create(o, TweenInfo.new(t, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), props)
+    tw:Play()
+    return tw
+end
+
+-- Привязка цвета акцента к объекту
+local function accent(obj, prop)
+    obj[prop] = Theme.Accent
+    AccentHooks[#AccentHooks + 1] = function(c) obj[prop] = c end
+end
+
+local function setAccent(c)
+    Theme.Accent = c
+    for _, f in ipairs(AccentHooks) do pcall(f, c) end
+end
+
+local function getGuiParent()
+    local ok, ui = pcall(function() return gethui and gethui() end)
+    if ok and ui then return ui end
+    local ok2, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok2 and cg then
+        local t = Instance.new("Folder")
+        local ok3 = pcall(function() t.Parent = cg end)
+        if ok3 and t.Parent == cg then
+            t:Destroy()
+            return cg
+        end
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local function makeGui(name, order)
+    local g = new("ScreenGui", {
+        Name = name, ResetOnSpawn = false, IgnoreGuiInset = true,
+        DisplayOrder = order, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = getGuiParent(),
+    })
+    Roots[#Roots + 1] = g
+    return g
+end
+
+-- ============================================================
+-- 4. ИГРОВАЯ ЛОГИКА: персонажи, команды, видимость
+-- ============================================================
+local charCache = {}
+
+-- Ищем модель персонажа игрока (в Blox Strike она может лежать не в Player.Character)
+local function resolveCharacter(plr)
+    local c = plr.Character
+    if c and c.Parent then return c end
+    local now = os.clock()
+    local cached = charCache[plr]
+    if cached and now - cached.t < 1 then return cached.m end
+    local found
+    local direct = Workspace:FindFirstChild(plr.Name)
+    if direct and direct:IsA("Model") then
+        found = direct
+    else
+        for _, ch in ipairs(Workspace:GetChildren()) do
+            if ch:IsA("Folder") or ch:IsA("Model") then
+                local x = ch:FindFirstChild(plr.Name)
+                if x and x:IsA("Model") then
+                    found = x
+                    break
+                end
+            end
+        end
+    end
+    charCache[plr] = { m = found, t = now }
+    return found
+end
+
+-- Свой персонаж (ищем так же, как персонажей других игроков)
+local function myChar()
+    return resolveCharacter(LocalPlayer)
+end
+
+local function getRoot(char)
+    return char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart or char:FindFirstChildWhichIsA("BasePart")
+end
+
+local function getTorso(char)
+    return char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or getRoot(char)
+end
+
+local function getAimPart(char, mode)
+    if mode == "Head" then
+        return char:FindFirstChild("Head") or getRoot(char)
+    elseif mode == "Torso" then
+        return getTorso(char)
+    end
+    return getRoot(char)
+end
+
+local function getHealth(char)
+    local h = char:FindFirstChildOfClass("Humanoid")
+    if h then return h.Health, math.max(h.MaxHealth, 1) end
+    local hp = char:GetAttribute("Health") or char:GetAttribute("health")
+    if type(hp) == "number" then
+        local mx = char:GetAttribute("MaxHealth") or 100
+        return hp, math.max(mx, 1)
+    end
+    return 100, 100
+end
+
+local function isAlive(char)
+    local hp = getHealth(char)
+    return hp > 0
+end
+
+-- Враг ли игрок (учитываем и Team, и атрибуты, и FFA)
+local function isEnemy(plr)
+    if plr == LocalPlayer then return false end
+    local myT, thT = LocalPlayer.Team, plr.Team
+    if myT and thT then return myT ~= thT end
+    local a, b = LocalPlayer:GetAttribute("Team"), plr:GetAttribute("Team")
+    if a ~= nil and b ~= nil then return a ~= b end
+    if not LocalPlayer.Neutral and not plr.Neutral then
+        return LocalPlayer.TeamColor ~= plr.TeamColor
+    end
+    return true
+end
+
+local function passesTeam(plr, check)
+    if plr == LocalPlayer then return false end
+    if not check then return true end
+    return isEnemy(plr)
+end
+
+-- Наш собственный рейкаст: вызов без двоеточия не попадает в __namecall-перехват
+local function ownRay(origin, dir, params)
+    return Workspace.Raycast(Workspace, origin, dir, params)
+end
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- Видна ли часть без преград (прозрачные/неколлизионные детали пропускаем)
+local function isVisible(part, char)
+    local cam = getCamera()
+    if not cam then return true end
+    local ignore = { cam, char }
+    local my = myChar()
+    if my then ignore[#ignore + 1] = my end
+    rayParams.FilterDescendantsInstances = ignore
+    local origin = cam.CFrame.Position
+    local dir = part.Position - origin
+    for _ = 1, 4 do
+        local r = ownRay(origin, dir, rayParams)
+        if not r then return true end
+        local hit = r.Instance
+        if hit.CanCollide == false or hit.Transparency >= 0.95 then
+            ignore[#ignore + 1] = hit
+            rayParams.FilterDescendantsInstances = ignore
+            origin = r.Position
+            dir = part.Position - origin
+        else
+            return false
+        end
+    end
+    return false
+end
+
+-- ============================================================
+-- 5. ОВЕРЛЕЙ: ESP, FOV-круг, радар, прицел, HUD
+-- ============================================================
+local Overlay, ESPFolder, FOVCircle, FOVStroke, Radar, HUDLabel, CrossDot, AimDot
+local HitFrames = {}
+local CrossParts = {}
+local ESPObjs, RadarDots = {}, {}
+local origFOV, fovApplied = nil, false
+
+local function notify(text, dur)
+    if not Overlay then return end
+    local holder = new("Frame", {
+        Size = UDim2.fromOffset(260, 34), AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 1, 50), BackgroundColor3 = Theme.Panel,
+        BorderSizePixel = 0, Parent = Overlay,
+    }, { corner(10), stroke(Theme.Accent, 1.5) })
+    new("TextLabel", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = text,
+        TextColor3 = Theme.Text, Font = Enum.Font.GothamMedium, TextSize = 14, Parent = holder,
+    })
+    tween(holder, 0.35, { Position = UDim2.new(0.5, 0, 1, -22) }, Enum.EasingStyle.Back)
+    task.delay(dur or 2.6, function()
+        if holder and holder.Parent then
+            local tw = tween(holder, 0.3, { Position = UDim2.new(0.5, 0, 1, 50) })
+            tw.Completed:Wait()
+            holder:Destroy()
+        end
+    end)
+end
+
+local function buildOverlay()
+    Overlay = makeGui("ClaudeOverlay", 50)
+    -- Папка для нативных объектов ESP (Highlight / BillboardGui / BoxHandleAdornment)
+    ESPFolder = new("Folder", { Name = "ClaudeESP", Parent = getGuiParent() })
+    Roots[#Roots + 1] = ESPFolder
+
+    -- Круг FOV аимбота
+    FOVCircle = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Visible = false, Parent = Overlay,
+    }, { corner(999), new("UIStroke", { Color = Theme.Accent, Thickness = 1.5, Transparency = 0.15 }) })
+    FOVStroke = FOVCircle:FindFirstChildOfClass("UIStroke")
+
+    -- Радар
+    local R = (Dev.kind == "phone") and 60 or 74
+    Radar = new("Frame", {
+        Name = "Radar", Size = UDim2.fromOffset(R * 2, R * 2), AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -16, 0, 16), BackgroundColor3 = Color3.fromRGB(10, 10, 16),
+        BackgroundTransparency = 0.25, Visible = false, BorderSizePixel = 0, Parent = Overlay,
+    }, { corner(999), stroke(Theme.Accent, 1.5) })
+    new("Frame", {
+        Size = UDim2.new(1, -10, 0, 1), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.8, BorderSizePixel = 0, Parent = Radar,
+    })
+    new("Frame", {
+        Size = UDim2.new(0, 1, 1, -10), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.8, BorderSizePixel = 0, Parent = Radar,
+    })
+    new("Frame", {
+        Size = UDim2.fromOffset(6, 6), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = Color3.fromRGB(80, 255, 140), BorderSizePixel = 0, Parent = Radar,
+    }, { corner(3) })
+
+    -- Прицел
+    for i = 1, 4 do
+        CrossParts[i] = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, Visible = false, Parent = Overlay,
+        })
+    end
+    CrossDot = new("Frame", {
+        Size = UDim2.fromOffset(3, 3), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0, Visible = false, Parent = Overlay,
+    }, { corner(2) })
+
+    -- HUD
+    HUDLabel = new("TextLabel", {
+        Size = UDim2.fromOffset(240, 18), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 8),
+        BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = Color3.new(1, 1, 1),
+        TextStrokeTransparency = 0.5, Text = "", Visible = false, Parent = Overlay,
+    })
+
+    -- Точка наводки (для отладки аимбота)
+    AimDot = new("Frame", {
+        Size = UDim2.fromOffset(8, 8), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(255, 60, 60),
+        BorderSizePixel = 0, Visible = false, Parent = Overlay,
+    }, { corner(4), stroke(Color3.new(1, 1, 1), 1) })
+
+    -- Хитмаркер (4 диагональные чёрточки)
+    for i = 1, 4 do
+        HitFrames[i] = new("Frame", {
+            Size = UDim2.fromOffset(2, 9), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, Visible = false, Rotation = (i == 1 or i == 4) and -45 or 45, Parent = Overlay,
+        })
+    end
+
+    -- Anti-AFK
+    track(LocalPlayer.Idled:Connect(function()
+        if S.Misc.AntiAFK and VirtualUser then
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end)
+        end
+    end))
+end
+
+-- ============================================================
+-- ЦЕЛИ: игроки и (опционально) ЛЮБЫЕ модели с Humanoid
+-- ============================================================
+-- Если настоящие «тела» в игре — это не модели игроков (боты, отдельные хитбокс-модели),
+-- режим «Все модели» увидит их и ESP, и аимбот.
+local ModelSet = {}   -- [Model] = true: все модели, внутри которых есть Humanoid
+
+local function considerInstance(d)
+    if d:IsA("Humanoid") then
+        local m = d.Parent
+        if m and m:IsA("Model") then ModelSet[m] = true end
+    end
+end
+
+local function startModelTracking()
+    for _, d in ipairs(Workspace:GetDescendants()) do considerInstance(d) end
+    track(Workspace.DescendantAdded:Connect(considerInstance))
+    track(Workspace.DescendantRemoving:Connect(function(d)
+        if d:IsA("Humanoid") then
+            local m = d.Parent
+            if m then ModelSet[m] = nil end
+        elseif ModelSet[d] then
+            ModelSet[d] = nil
+        end
+    end))
+end
+
+local function modelCount()
+    local n = 0
+    for _ in pairs(ModelSet) do n += 1 end
+    return n
+end
+
+-- Проходит ли цель проверку «враг / не враг»
+local function entPass(ent, check)
+    if ent.plr then return passesTeam(ent.plr, check) end
+    if not check then return true end
+    local a = ent.char:GetAttribute("Team")
+    local b = LocalPlayer:GetAttribute("Team") or (LocalPlayer.Team and LocalPlayer.Team.Name)
+    if a ~= nil and b ~= nil then return tostring(a) ~= tostring(b) end
+    return true
+end
+
+local entCache, entT, entMode = {}, 0, ""
+local function getEntities(mode)
+    local now = os.clock()
+    if mode == entMode and now - entT < 0.03 then return entCache end
+    local list, seen = {}, {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local ch = resolveCharacter(plr)
+            if ch then
+                list[#list + 1] = {
+                    plr = plr, char = ch, key = plr,
+                    name = (plr.DisplayName ~= "" and plr.DisplayName) or plr.Name,
+                }
+                seen[ch] = true
+            end
+        end
+    end
+    if mode == "All" then
+        local my = myChar()
+        local cam = getCamera()
+        for m in pairs(ModelSet) do
+            if m.Parent and not seen[m] and m ~= my
+                and not (my and m:IsDescendantOf(my)) and not (cam and m:IsDescendantOf(cam)) then
+                if getRoot(m) then
+                    list[#list + 1] = { plr = nil, char = m, key = m, name = m.Name .. " [модель]" }
+                end
+            end
+        end
+    end
+    entCache, entT, entMode = list, now, mode
+    return list
+end
+
+-- ---------- ESP (нативный: Highlight + BillboardGui + BoxHandleAdornment) ----------
+-- Всё это рисует сам движок Roblox прямо на модели игрока, поэтому ESP не отстаёт от движения.
+-- Только трассеры считаются вручную (по голове цели).
+local function newESP(plr)
+    local o = {}
+    o.HL = new("Highlight", {
+        FillTransparency = 0.55, OutlineTransparency = 0,
+        DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, Enabled = false, Parent = ESPFolder,
+    })
+    o.Box = new("BoxHandleAdornment", {
+        AlwaysOnTop = true, ZIndex = 1, Transparency = 0.8, Visible = false, Parent = ESPFolder,
+    })
+    o.Tag = new("BillboardGui", {
+        Size = UDim2.fromOffset(160, 46), AlwaysOnTop = true, LightInfluence = 0, Enabled = false, Parent = ESPFolder,
+    })
+    o.Name = new("TextLabel", {
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16), Font = Enum.Font.GothamBold, TextSize = 14,
+        TextColor3 = Color3.new(1, 1, 1), TextStrokeTransparency = 0.35, Parent = o.Tag,
+    })
+    o.Info = new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 16), Size = UDim2.new(1, 0, 0, 14),
+        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = Color3.new(1, 1, 1),
+        TextStrokeTransparency = 0.35, Parent = o.Tag,
+    })
+    o.HPBack = new("Frame", {
+        Position = UDim2.new(0.1, 0, 0, 33), Size = UDim2.new(0.8, 0, 0, 4), BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 0.3, BorderSizePixel = 0, Parent = o.Tag,
+    }, { corner(2) })
+    o.HPFill = new("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0, Parent = o.HPBack }, { corner(2) })
+    o.Tracer = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, Visible = false, Parent = Overlay,
+    })
+    o.sc, o.scT, o.lastInfo, o.lastName = 1, 0, "", ""
+    ESPObjs[plr] = o
+    return o
+end
+
+local function hideESP(o)
+    o.HL.Enabled = false
+    o.Box.Visible = false
+    o.Tag.Enabled = false
+    o.Tracer.Visible = false
+end
+
+local function destroyESP(plr)
+    local o = ESPObjs[plr]
+    if o then
+        for _, v in pairs(o) do
+            if typeof(v) == "Instance" then pcall(function() v:Destroy() end) end
+        end
+        ESPObjs[plr] = nil
+    end
+    local d = RadarDots[plr]
+    if d then
+        d:Destroy()
+        RadarDots[plr] = nil
+    end
+    charCache[plr] = nil
+end
+
+local espWasOn = false
+local function updateESP(cam, vp)
+    local cfg = S.ESP
+    if not cfg.Enabled then
+        if espWasOn then
+            espWasOn = false
+            for _, o in pairs(ESPObjs) do hideESP(o) end
+        end
+        return
+    end
+    espWasOn = true
+    local now = os.clock()
+    local col = colorOf(cfg.Color)
+    local camPos = cam.CFrame.Position
+    local seenKeys = {}
+
+    for _, ent in ipairs(getEntities(cfg.Targets)) do
+        local key = ent.key
+        seenKeys[key] = true
+        local o = ESPObjs[key] or newESP(key)
+        local char = ent.char
+        local root = getRoot(char)
+        local head = char:FindFirstChild("Head") or root
+        local show = root and head and entPass(ent, cfg.TeamCheck) and isAlive(char)
+        local dist = show and (root.Position - camPos).Magnitude or 0
+        if show and dist > cfg.MaxDist then show = false end
+
+        if not show then
+            hideESP(o)
+        else
+            if now - o.scT > 1 then
+                pcall(function() o.sc = math.clamp(char:GetExtentsSize().Y / 5.4, 0.6, 2) end)
+                o.scT = now
+            end
+            local hp, mhp = getHealth(char)
+            local frac = math.clamp(hp / mhp, 0, 1)
+
+            -- Чамсы / контур
+            local hlOn = cfg.Chams or cfg.Outline
+            o.HL.Enabled = hlOn
+            if hlOn then
+                o.HL.Adornee = char
+                o.HL.FillColor = col
+                o.HL.OutlineColor = Color3.new(1, 1, 1)
+                o.HL.FillTransparency = cfg.Chams and 0.55 or 1
+            end
+
+            -- 3D-бокс
+            if cfg.Box then
+                o.Box.Adornee = root
+                o.Box.Size = Vector3.new(3.4 * o.sc, 5.8 * o.sc, 2.4 * o.sc)
+                o.Box.Color3 = col
+            end
+            o.Box.Visible = cfg.Box
+
+            -- Табличка: ник, HP, дистанция
+            local tagOn = cfg.Name or cfg.Health or cfg.Distance
+            o.Tag.Enabled = tagOn
+            if tagOn then
+                o.Tag.Adornee = head
+                o.Tag.StudsOffsetWorldSpace = Vector3.new(0, 1.9 * o.sc, 0)
+                o.Tag.MaxDistance = cfg.MaxDist
+                o.Name.Visible = cfg.Name
+                if cfg.Name then
+                    if o.lastName ~= ent.name then
+                        o.lastName = ent.name
+                        o.Name.Text = ent.name
+                    end
+                    o.Name.TextColor3 = col
+                end
+                local parts = {}
+                if cfg.Health then parts[#parts + 1] = math.floor(hp) .. " HP" end
+                if cfg.Distance then parts[#parts + 1] = math.floor(dist) .. "m" end
+                local txt = table.concat(parts, "  •  ")
+                if txt ~= o.lastInfo then
+                    o.lastInfo = txt
+                    o.Info.Text = txt
+                end
+                o.HPBack.Visible = cfg.Health
+                if cfg.Health then
+                    o.HPFill.Size = UDim2.fromScale(frac, 1)
+                    o.HPFill.BackgroundColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(70, 255, 120), frac)
+                end
+            end
+
+            -- Трассер (экранный)
+            local drawn = false
+            if cfg.Tracers then
+                local sp = cam:WorldToViewportPoint(root.Position)
+                if sp.Z > 0 then
+                    local from = Vector2.new(vp.X / 2, vp.Y)
+                    local to = Vector2.new(sp.X, sp.Y)
+                    local d = to - from
+                    o.Tracer.Size = UDim2.fromOffset(d.Magnitude, 1.5)
+                    o.Tracer.Position = UDim2.fromOffset((from.X + to.X) / 2, (from.Y + to.Y) / 2)
+                    o.Tracer.Rotation = math.deg(math.atan2(d.Y, d.X))
+                    o.Tracer.BackgroundColor3 = col
+                    drawn = true
+                end
+            end
+            o.Tracer.Visible = drawn
+        end
+    end
+
+    -- Убираем объекты тех, кого больше нет
+    for key in pairs(ESPObjs) do
+        if not seenKeys[key] then destroyESP(key) end
+    end
+end
+
+-- ---------- Радар ----------
+local function updateRadar(cam)
+    Radar.Visible = S.Misc.Radar
+    if not S.Misc.Radar then return end
+    local R = Radar.AbsoluteSize.X / 2
+    local range = math.max(S.Misc.RadarRange, 10)
+    local seen = {}
+    for _, ent in ipairs(getEntities(S.ESP.Targets)) do
+        local key = ent.key
+        seen[key] = true
+        local dot = RadarDots[key]
+        if not dot then
+            dot = new("Frame", {
+                Size = UDim2.fromOffset(7, 7), AnchorPoint = Vector2.new(0.5, 0.5),
+                BorderSizePixel = 0, Visible = false, Parent = Radar,
+            }, { corner(4) })
+            RadarDots[key] = dot
+        end
+        local root = getRoot(ent.char)
+        if root and isAlive(ent.char) and entPass(ent, true) then
+            local rel = cam.CFrame:PointToObjectSpace(root.Position)
+            local v = Vector2.new(rel.X, rel.Z) / range
+            if v.Magnitude > 1 then v = v.Unit end
+            dot.Position = UDim2.fromOffset(R + v.X * (R - 5), R + v.Y * (R - 5))
+            dot.BackgroundColor3 = colorOf(S.ESP.Color)
+            dot.Visible = true
+        else
+            dot.Visible = false
+        end
+    end
+    for key, dot in pairs(RadarDots) do
+        if not seen[key] then
+            dot:Destroy()
+            RadarDots[key] = nil
+        end
+    end
+end
+
+-- ---------- Прицел ----------
+local function updateCrosshair(vp)
+    local on = S.Misc.Crosshair
+    CrossDot.Visible = on
+    for i = 1, 4 do CrossParts[i].Visible = on end
+    if not on then return end
+    local cx, cy = vp.X / 2, vp.Y / 2
+    local len, gap, th = S.Misc.CrossSize, 3, 2
+    local col = Theme.Accent
+    CrossDot.Position = UDim2.fromOffset(cx, cy)
+    CrossDot.BackgroundColor3 = col
+    local off = gap + len / 2
+    CrossParts[1].Size = UDim2.fromOffset(th, len)
+    CrossParts[1].Position = UDim2.fromOffset(cx, cy - off)
+    CrossParts[2].Size = UDim2.fromOffset(th, len)
+    CrossParts[2].Position = UDim2.fromOffset(cx, cy + off)
+    CrossParts[3].Size = UDim2.fromOffset(len, th)
+    CrossParts[3].Position = UDim2.fromOffset(cx - off, cy)
+    CrossParts[4].Size = UDim2.fromOffset(len, th)
+    CrossParts[4].Position = UDim2.fromOffset(cx + off, cy)
+    for i = 1, 4 do CrossParts[i].BackgroundColor3 = col end
+end
+
+-- ============================================================
+-- ЭФФЕКТЫ: 3 лицо, руки, аура, небо, трассеры пуль, баннихоп
+-- ============================================================
+local origLight, restoreLight   -- значения задаются ниже, в блоке «Свет»
+
+-- ---------- Вид от 3 лица ----------
+-- Двигаем камеру назад уже после того, как игра её выставила.
+-- Работает, если игра каждый кадр сама задаёт CFrame камеры.
+local tpLast, tpBase = nil, nil
+local function tpUndo(cam)
+    if tpLast and cam.CFrame == tpLast then
+        cam.CFrame = tpBase           -- игра не трогала камеру в этом кадре: откатываем наш сдвиг
+    end
+    tpLast, tpBase = nil, nil
+end
+
+local function updateThirdPerson(cam)
+    if not S.Misc.ThirdPerson then return end
+    local base = cam.CFrame
+    local dist = S.Misc.TPDist
+    local char = myChar()
+    local ignore = { cam }
+    if char then ignore[#ignore + 1] = char end
+    rayParams.FilterDescendantsInstances = ignore
+    local r = ownRay(base.Position, -base.LookVector * dist, rayParams)
+    if r then dist = math.max(r.Distance - 0.6, 0.5) end   -- не пускаем камеру в стену
+    local newCF = base * CFrame.new(1.2, 0.6, dist)
+    cam.CFrame = newCF
+    tpLast, tpBase = newCF, base
+    if char then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then p.LocalTransparencyModifier = 0 end
+        end
+    end
+end
+
+-- ---------- Руки / оружие от первого лица (viewmodel лежит в Camera) ----------
+local handOrig = setmetatable({}, { __mode = "k" })
+local handParts, handScan = {}, 0
+local MatMap = {
+    Neon = Enum.Material.Neon, ForceField = Enum.Material.ForceField, Glass = Enum.Material.Glass,
+}
+
+local function restoreHands()
+    for p, o in pairs(handOrig) do
+        if p.Parent then
+            pcall(function()
+                p.Color = o.c
+                p.Material = o.m
+                p.Transparency = o.t
+            end)
+        end
+        handOrig[p] = nil
+    end
+end
+
+local function updateHands(cam)
+    local mode = S.Misc.HandsMode
+    local tp = S.Misc.ThirdPerson
+    if mode == "Off" and not tp then
+        if next(handOrig) then restoreHands() end
+        return
+    end
+    local now = os.clock()
+    if now - handScan > 0.4 then
+        handScan = now
+        handParts = {}
+        for _, d in ipairs(cam:GetDescendants()) do
+            if d:IsA("BasePart") then handParts[#handParts + 1] = d end
+        end
+    end
+    local hue = (now * 0.25) % 1
+    local mat = MatMap[S.Misc.HandsMat]
+    for _, p in ipairs(handParts) do
+        if p.Parent then
+            local o = handOrig[p]
+            if not o then
+                o = { c = p.Color, m = p.Material, t = p.Transparency }
+                handOrig[p] = o
+            end
+            if tp then
+                p.Transparency = 1                      -- в 3 лице viewmodel прячем
+            elseif mode == "Rainbow" then
+                p.Color = Color3.fromHSV(hue, 1, 1)
+                p.Material = mat or o.m
+                p.Transparency = S.Misc.HandsTrans
+            elseif mode == "Color" then
+                p.Color = colorOf(S.Misc.HandsColor)
+                p.Material = mat or o.m
+                p.Transparency = S.Misc.HandsTrans
+            else                                         -- Ghost: просто прозрачные
+                p.Material = mat or o.m
+                p.Transparency = S.Misc.HandsTrans
+            end
+        end
+    end
+end
+
+-- ---------- Аура вокруг своего персонажа ----------
+local auraHL, auraPE, auraChar
+local function updateAura()
+    if not S.Misc.Aura then
+        if auraHL then auraHL:Destroy() auraHL = nil end
+        if auraPE then auraPE:Destroy() auraPE = nil end
+        return
+    end
+    local char = myChar()
+    if not char then return end
+    local col = Color3.fromHSV((os.clock() * 0.3) % 1, 0.85, 1)
+    if not auraHL or auraChar ~= char or not auraHL.Parent then
+        if auraHL then auraHL:Destroy() end
+        auraHL = new("Highlight", {
+            FillTransparency = 0.6, OutlineTransparency = 0, DepthMode = Enum.HighlightDepthMode.Occluded,
+            Adornee = char, Parent = ESPFolder,
+        })
+        auraChar = char
+    end
+    auraHL.FillColor = col
+    auraHL.OutlineColor = col
+    if S.Misc.AuraParticles then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and (not auraPE or auraPE.Parent ~= root) then
+            if auraPE then auraPE:Destroy() end
+            auraPE = new("ParticleEmitter", {
+                Texture = "rbxasset://textures/particles/sparkles_main.dds", Rate = 40,
+                Lifetime = NumberRange.new(0.8, 1.4), Speed = NumberRange.new(1, 3),
+                SpreadAngle = Vector2.new(180, 180), LightEmission = 1,
+                Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0) }),
+                Transparency = NumberSequence.new(0, 1), Parent = root,
+            })
+        end
+        if auraPE then auraPE.Color = ColorSequence.new(col) end
+    elseif auraPE then
+        auraPE:Destroy()
+        auraPE = nil
+    end
+end
+
+-- ---------- Небо ----------
+local SkyOptions = {
+    { "Off", "Выкл" }, { "Sunset", "Закат" }, { "Night", "Ночь" },
+    { "Neon", "Неон" }, { "Galaxy", "Галактика" }, { "Rainbow", "Радуга" },
+}
+local SkyPresets = {
+    Sunset = { clock = 17.7, color = Color3.fromRGB(255, 160, 110), decay = Color3.fromRGB(255, 90, 70), haze = 2.2, glare = 0.6, density = 0.3, stars = 0, bodies = true, bloom = false },
+    Night = { clock = 0, color = Color3.fromRGB(40, 55, 110), decay = Color3.fromRGB(10, 10, 35), haze = 1.6, glare = 0, density = 0.25, stars = 4000, bodies = true, bloom = false },
+    Neon = { clock = 0, color = Color3.fromRGB(255, 80, 220), decay = Color3.fromRGB(90, 40, 255), haze = 3, glare = 1, density = 0.35, stars = 3000, bodies = false, bloom = true },
+    Galaxy = { clock = 0, color = Color3.fromRGB(120, 80, 255), decay = Color3.fromRGB(20, 10, 60), haze = 2.5, glare = 0.4, density = 0.3, stars = 5000, bodies = false, bloom = true },
+    Rainbow = { clock = 0, color = Color3.fromRGB(255, 80, 80), decay = Color3.fromRGB(80, 80, 255), haze = 3, glare = 0.8, density = 0.35, stars = 2500, bodies = false, bloom = true },
+}
+local skyOn, skyObj, skyAtm, skyAtmOwn, skyBloom, atmBackup = false, nil, nil, false, nil, nil
+local skyHidden = {}
+
+local function restoreSky()
+    if not skyOn then return end
+    skyOn = false
+    if skyObj then pcall(function() skyObj:Destroy() end) skyObj = nil end
+    if skyBloom then pcall(function() skyBloom:Destroy() end) skyBloom = nil end
+    if skyAtm then
+        if skyAtmOwn then
+            pcall(function() skyAtm:Destroy() end)
+        elseif atmBackup then
+            pcall(function()
+                skyAtm.Density, skyAtm.Offset, skyAtm.Color = atmBackup.Density, atmBackup.Offset, atmBackup.Color
+                skyAtm.Decay, skyAtm.Glare, skyAtm.Haze = atmBackup.Decay, atmBackup.Glare, atmBackup.Haze
+            end)
+        end
+    end
+    skyAtm, skyAtmOwn, atmBackup = nil, false, nil
+    for _, s in ipairs(skyHidden) do pcall(function() s.Parent = Lighting end) end
+    skyHidden = {}
+    pcall(function() Lighting.ClockTime = origLight.ClockTime end)
+end
+
+local function applySky()
+    local name = S.Misc.Sky
+    local p = SkyPresets[name]
+    if not p then
+        restoreSky()
+        return
+    end
+    if not skyOn then
+        skyOn = true
+        for _, c in ipairs(Lighting:GetChildren()) do
+            if c:IsA("Sky") and c.Name ~= "ClaudeSky" then skyHidden[#skyHidden + 1] = c end
+        end
+        for _, s in ipairs(skyHidden) do s.Parent = nil end
+        skyObj = Instance.new("Sky")
+        skyObj.Name = "ClaudeSky"
+        -- пустые текстуры: небо рисуют только Atmosphere и звёзды
+        for _, f in ipairs({ "SkyboxBk", "SkyboxDn", "SkyboxFt", "SkyboxLf", "SkyboxRt", "SkyboxUp" }) do
+            skyObj[f] = ""
+        end
+        skyObj.Parent = Lighting
+        local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+        if atm then
+            atmBackup = {
+                Density = atm.Density, Offset = atm.Offset, Color = atm.Color,
+                Decay = atm.Decay, Glare = atm.Glare, Haze = atm.Haze,
+            }
+            skyAtmOwn = false
+        else
+            atm = Instance.new("Atmosphere")
+            atm.Parent = Lighting
+            skyAtmOwn = true
+        end
+        skyAtm = atm
+    end
+    if skyObj and skyObj.Parent ~= Lighting then skyObj.Parent = Lighting end
+    skyObj.StarCount = p.stars
+    skyObj.CelestialBodiesShown = p.bodies
+    skyAtm.Density = p.density
+    skyAtm.Offset = 0.25
+    skyAtm.Glare = p.glare
+    skyAtm.Haze = p.haze
+    if name ~= "Rainbow" then
+        skyAtm.Color = p.color
+        skyAtm.Decay = p.decay
+    end
+    Lighting.ClockTime = p.clock
+    if p.bloom then
+        if not skyBloom or not skyBloom.Parent then
+            skyBloom = Instance.new("BloomEffect")
+            skyBloom.Intensity = 0.7
+            skyBloom.Size = 28
+            skyBloom.Threshold = 1.1
+            skyBloom.Parent = Lighting
+        end
+    elseif skyBloom then
+        skyBloom:Destroy()
+        skyBloom = nil
+    end
+end
+
+local function updateSkyFrame()
+    if skyOn and S.Misc.Sky == "Rainbow" and skyAtm and skyAtm.Parent then
+        local h = (os.clock() * 0.08) % 1
+        skyAtm.Color = Color3.fromHSV(h, 0.75, 1)
+        skyAtm.Decay = Color3.fromHSV((h + 0.5) % 1, 0.85, 0.9)
+    end
+end
+
+-- ---------- Звуки выстрелов ----------
+-- Звуки собираются из встроенных файлов Roblox (rbxasset://) + эффекты и изменение скорости,
+-- поэтому не зависят от чужих ID. Если пресет молчит — используй «Свой ID звука».
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+local lastShotT, lastSoundT = 0, 0
+local aimDotWorld = nil
+
+local SoundOptions = {
+    { "Off", "Выкл" }, { "Galaxy", "Галактика" }, { "Laser", "Лазер" }, { "Cannon", "Пушка" },
+    { "Plasma", "Плазма" }, { "Sword", "Меч" }, { "Water", "Капля" }, { "Custom", "Свой ID" },
+}
+local HitOptions = { { "Off", "Выкл" }, { "Ping", "Пинг" }, { "Snap", "Щелчок" }, { "Bass", "Бас" } }
+
+local PING = "rbxasset://sounds/electronicpingshort.wav"
+local SoundPresets = {
+    Galaxy = { id = PING, from = 3.4, to = 0.4, time = 0.55, fx = {
+        { "Echo", { Delay = 0.16, Feedback = 0.45, DryLevel = 0, WetLevel = -4 } },
+        { "Reverb", { DecayTime = 3.5, Density = 1, Diffusion = 1, DryLevel = 0, WetLevel = -3 } },
+        { "Flange", { Depth = 0.8, Mix = 0.6, Rate = 1.5 } },
+    } },
+    Laser = { id = PING, from = 4.5, to = 1.3, time = 0.28, fx = {
+        { "Distortion", { Level = 0.35 } },
+        { "Echo", { Delay = 0.1, Feedback = 0.2, DryLevel = 0, WetLevel = -8 } },
+    } },
+    Cannon = { id = "rbxasset://sounds/bass.mp3", from = 1.3, to = 0.45, time = 0.6, fx = {
+        { "Distortion", { Level = 0.55 } },
+        { "Reverb", { DecayTime = 2.5, Density = 1, Diffusion = 1, DryLevel = 0, WetLevel = -4 } },
+    } },
+    Plasma = { id = "rbxasset://sounds/clickfast.wav", from = 0.6, to = 0.3, time = 0.4, fx = {
+        { "Chorus", { Depth = 0.6, Mix = 0.7, Rate = 3 } },
+        { "Echo", { Delay = 0.1, Feedback = 0.35, DryLevel = 0, WetLevel = -5 } },
+    } },
+    Sword = { id = "rbxasset://sounds/swordslash.wav", from = 1.6, to = 1.3, time = 0.3, fx = {
+        { "Reverb", { DecayTime = 1.5, Density = 1, Diffusion = 1, DryLevel = 0, WetLevel = -8 } },
+    } },
+    Water = { id = "rbxasset://sounds/impact_water.mp3", from = 1.8, to = 1.5, time = 0.25, fx = {} },
+}
+local HitPresets = {
+    Ping = { id = PING, from = 2.4, to = 2.4, time = 0.1, fx = {} },
+    Snap = { id = "rbxasset://sounds/snap.mp3", from = 1.2, to = 1.2, time = 0.1, fx = {} },
+    Bass = { id = "rbxasset://sounds/bass.mp3", from = 2, to = 1.6, time = 0.2, fx = {} },
+}
+
+local function playPreset(cfg, vol, customId)
+    local snd = Instance.new("Sound")
+    snd.Volume = vol
+    snd.SoundId = customId or cfg.id
+    snd.PlaybackSpeed = cfg.from
+    for _, fx in ipairs(cfg.fx) do
+        local ok, e = pcall(Instance.new, fx[1] .. "SoundEffect")
+        if ok and e then
+            for k, v in pairs(fx[2]) do
+                pcall(function() e[k] = v end)
+            end
+            e.Parent = snd
+        end
+    end
+    snd.Parent = SoundService
+    snd:Play()
+    if cfg.to ~= cfg.from then
+        tween(snd, cfg.time, { PlaybackSpeed = cfg.to }, Enum.EasingStyle.Quad)
+    end
+    Debris:AddItem(snd, 4)
+end
+
+local function playShotSound()
+    local name = S.Misc.ShotSound
+    if name == "Off" then return end
+    local now = os.clock()
+    if now - lastSoundT < 0.03 then return end
+    lastSoundT = now
+    if name == "Custom" then
+        local id = (tostring(S.Misc.CustomSoundId):gsub("%D", ""))
+        if id == "" then return end
+        playPreset({ from = 1, to = 1, time = 0.1, fx = {} }, S.Misc.SoundVol, "rbxassetid://" .. id)
+    else
+        local cfg = SoundPresets[name]
+        if cfg then playPreset(cfg, S.Misc.SoundVol) end
+    end
+end
+
+-- Глушим родные звуки оружия (viewmodel в Camera и звуки Tool в персонаже)
+local muteOrig = setmetatable({}, { __mode = "k" })
+local muteScan = 0
+local function restoreMute()
+    for s, v in pairs(muteOrig) do
+        pcall(function() s.Volume = v end)
+        muteOrig[s] = nil
+    end
+end
+local function updateMute(cam)
+    if not S.Misc.MuteGun then
+        if next(muteOrig) then restoreMute() end
+        return
+    end
+    local now = os.clock()
+    if now - muteScan < 0.4 then return end
+    muteScan = now
+    local function handle(root, needTool)
+        for _, d in ipairs(root:GetDescendants()) do
+            if d:IsA("Sound") and (not needTool or d:FindFirstAncestorOfClass("Tool")) then
+                if muteOrig[d] == nil then muteOrig[d] = d.Volume end
+                d.Volume = 0
+            end
+        end
+    end
+    handle(cam, false)
+    local ch = myChar()
+    if ch then handle(ch, true) end
+end
+
+-- ---------- Хитмаркер и звук попадания ----------
+local hpPrev = setmetatable({}, { __mode = "k" })
+local hmUntil = 0
+local HitOff = { { -8, -8 }, { 8, -8 }, { -8, 8 }, { 8, 8 } }
+local function updateHitmarker(vp)
+    local now = os.clock()
+    if S.Misc.Hitmarker or S.Misc.HitSound ~= "Off" then
+        for _, ent in ipairs(getEntities(S.Aim.Targets)) do
+            local hp = getHealth(ent.char)
+            local prev = hpPrev[ent.key]
+            hpPrev[ent.key] = hp
+            if prev and hp < prev and now - lastShotT < 0.6 and entPass(ent, true) then
+                hmUntil = now + 0.28
+                local cfg = HitPresets[S.Misc.HitSound]
+                if cfg then pcall(playPreset, cfg, S.Misc.SoundVol) end
+            end
+        end
+    end
+    local left = hmUntil - now
+    local show = S.Misc.Hitmarker and left > 0
+    for i, f in ipairs(HitFrames) do
+        f.Visible = show
+        if show then
+            f.Position = UDim2.fromOffset(vp.X / 2 + HitOff[i][1], vp.Y / 2 + HitOff[i][2])
+            f.BackgroundTransparency = 1 - math.clamp(left / 0.28, 0, 1)
+        end
+    end
+end
+
+-- Точка наводки аимбота (отладка: видно, куда именно он целится)
+local function updateAimDot(cam)
+    if S.Aim.ShowDot and aimDotWorld then
+        local sp, on = cam:WorldToViewportPoint(aimDotWorld)
+        AimDot.Visible = on and sp.Z > 0
+        if AimDot.Visible then AimDot.Position = UDim2.fromOffset(sp.X, sp.Y) end
+    else
+        AimDot.Visible = false
+    end
+end
+
+-- ---------- Трассеры пуль ----------
+local tracerWindow, tracerCount, tracerHue = 0, 0, 0
+local function drawTracer(a, b, mine)
+    local cam = getCamera()
+    if not cam then return end
+    local len = (b - a).Magnitude
+    if len < 1 then return end
+    local col
+    if S.Misc.BTracerRainbow then
+        tracerHue = (tracerHue + 0.07) % 1
+        col = Color3.fromHSV(tracerHue, 1, 1)
+    else
+        col = mine and Theme.Accent or Color3.fromRGB(255, 80, 80)
+    end
+    local life = S.Misc.BTracerTime
+    local p = Instance.new("Part")
+    p.Anchored = true
+    p.CanCollide = false
+    p.CanTouch = false
+    p.CanQuery = false
+    p.CastShadow = false
+    p.Material = Enum.Material.Neon
+    p.Color = col
+    p.Transparency = 0.15
+    p.Size = Vector3.new(0.07, 0.07, len)
+    p.CFrame = CFrame.lookAt(a, b) * CFrame.new(0, 0, -len / 2)
+    p.Parent = cam
+    tween(p, life, { Transparency = 1 })
+    Debris:AddItem(p, life + 0.2)
+end
+
+-- Вызывается из перехвата лучей, которые игра сама пускает для выстрелов
+local function onGameRay(origin, direction, result)
+    local wantTracer = S.Misc.BTracers
+    local wantSound = S.Misc.ShotSound ~= "Off"
+    local wantHit = S.Misc.Hitmarker or S.Misc.HitSound ~= "Off"
+    if not (wantTracer or wantSound or wantHit) then return end
+    if typeof(origin) ~= "Vector3" or typeof(direction) ~= "Vector3" then return end
+    if direction.Magnitude < 60 then return end          -- короткие лучи (земля и т.п.) не трогаем
+    local cam = getCamera()
+    if not cam then return end
+    local now = os.clock()
+    local mine = (origin - cam.CFrame.Position).Magnitude < 12
+    if not mine then
+        local ch = myChar()
+        local rp = ch and getRoot(ch)
+        if rp and (origin - rp.Position).Magnitude < 12 then mine = true end
+    end
+    if mine then
+        lastShotT = now
+        if wantSound then pcall(playShotSound) end
+    end
+    if not wantTracer then return end
+    if S.Misc.BTracerWho == "Mine" and not mine then return end
+    if now - tracerWindow > 1 then tracerWindow, tracerCount = now, 0 end
+    if tracerCount >= 60 then return end
+    tracerCount += 1
+    local target = (result and result.Position) or (origin + direction)
+    local delta = target - origin
+    if delta.Magnitude > 400 then target = origin + delta.Unit * 400 end
+    local startPos = origin
+    if mine then
+        local cf = cam.CFrame
+        startPos = origin + cf.RightVector * 0.6 - cf.UpVector * 0.5 + cf.LookVector * 1.2
+    end
+    drawTracer(startPos, target, mine)
+end
+
+-- Запасной вариант: свой выстрел по нажатию ЛКМ / нашему автовыстрелу
+local function crosshairTracer()
+    local cam = getCamera()
+    if not cam then return end
+    lastShotT = os.clock()
+    pcall(playShotSound)
+    if not S.Misc.BTracers then return end
+    local vp = cam.ViewportSize
+    local ray = cam:ViewportPointToRay(vp.X / 2, vp.Y / 2)
+    local ignore = { cam }
+    if myChar() then ignore[#ignore + 1] = myChar() end
+    rayParams.FilterDescendantsInstances = ignore
+    local r = ownRay(ray.Origin, ray.Direction * 500, rayParams)
+    local target = r and r.Position or (ray.Origin + ray.Direction * 500)
+    local cf = cam.CFrame
+    local startPos = cf.Position + cf.RightVector * 0.6 - cf.UpVector * 0.5 + cf.LookVector * 1.2
+    drawTracer(startPos, target, true)
+end
+
+local function installTracerHook()
+    env.ClaudeOnRay = onGameRay        -- при повторном запуске просто подменяем обработчик
+    if env.ClaudeHookInstalled then return end
+    if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then return end
+    local ok = pcall(function()
+        local old
+        old = hookmetamethod(game, "__namecall", function(self, ...)
+            if self == Workspace then
+                local method = getnamecallmethod()
+                local f = env.ClaudeOnRay
+                if f and not (checkcaller and checkcaller()) then
+                    if method == "Raycast" then
+                        local origin, direction = ...
+                        local result = old(self, ...)
+                        pcall(f, origin, direction, result)
+                        return result
+                    elseif method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList"
+                        or method == "FindPartOnRayWithWhitelist" then
+                        local ray = ...
+                        local part, pos, nrm = old(self, ...)
+                        if typeof(ray) == "Ray" then
+                            pcall(f, ray.Origin, ray.Direction, { Position = pos })
+                        end
+                        return part, pos, nrm
+                    end
+                end
+            end
+            return old(self, ...)
+        end)
+    end)
+    if ok then env.ClaudeHookInstalled = true end
+end
+
+-- ---------- Движение: баннихоп, скорость, полёт, noclip ----------
+local origWalk, bhopKeyDown, noclipWas = nil, false, false
+
+local function releaseBhopKey()
+    if bhopKeyDown and VIM then
+        pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
+    end
+    bhopKeyDown = false
+end
+
+local function restoreMovement()
+    pcall(function()
+        local ch = myChar()
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if hum and origWalk then hum.WalkSpeed = origWalk end
+    end)
+    origWalk = nil
+    releaseBhopKey()
+end
+
+local function movementStep(dt)
+    if not Alive then return end
+    local char = myChar()
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and getRoot(char)
+    if not hum or not root or hum.Health <= 0 then return end
+    local md = hum.MoveDirection
+    local moving = md.Magnitude > 0.1
+    local grounded = hum.FloorMaterial ~= Enum.Material.Air
+    local cfg = S.Misc
+
+    -- Скорость (WalkSpeed): запоминаем оригинал и возвращаем при выключении
+    local wantWS = cfg.Speed and cfg.SpeedMode == "WalkSpeed" and not cfg.Fly
+    if wantWS then
+        if not origWalk then origWalk = hum.WalkSpeed end
+        hum.WalkSpeed = cfg.SpeedValue
+    elseif origWalk then
+        hum.WalkSpeed = origWalk
+        origWalk = nil
+    end
+
+    -- Скорость (CFrame / Velocity)
+    if cfg.Speed and not cfg.Fly and moving then
+        if cfg.SpeedMode == "CFrame" then
+            root.CFrame = root.CFrame + md * math.max(cfg.SpeedValue - hum.WalkSpeed, 0) * dt
+        elseif cfg.SpeedMode == "Velocity" then
+            local v = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = Vector3.new(md.X * cfg.SpeedValue, v.Y, md.Z * cfg.SpeedValue)
+        end
+    end
+
+    -- Баннихоп
+    if cfg.Bhop then
+        local want
+        if cfg.BhopMode == "Space" then
+            want = UserInputService:IsKeyDown(Enum.KeyCode.Space)
+        elseif cfg.BhopMode == "Constant" then
+            want = true
+        else
+            want = moving
+        end
+        if want and grounded then
+            if cfg.BhopJump == "Key" and VIM then
+                pcall(function() VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game) end)
+                bhopKeyDown = true
+            else
+                hum.Jump = true
+                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end
+        -- Ускорение в воздухе (скорость баннихопа)
+        if want and cfg.BhopBoost and not grounded and moving and not cfg.Fly then
+            local v = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = Vector3.new(md.X * cfg.BhopSpeed, v.Y, md.Z * cfg.BhopSpeed)
+        end
+        if bhopKeyDown and (not grounded or not want) then releaseBhopKey() end
+    elseif bhopKeyDown then
+        releaseBhopKey()
+    end
+
+    -- Полёт: вперёд по взгляду камеры, Space / LeftCtrl — вверх / вниз
+    if cfg.Fly then
+        local cam = getCamera()
+        local dir = Vector3.zero
+        if moving then
+            dir = md
+            if cam then
+                local look = cam.CFrame.LookVector
+                local flat = Vector3.new(look.X, 0, look.Z)
+                if flat.Magnitude > 0.01 then
+                    local fwd = md:Dot(flat.Unit)
+                    dir = md + Vector3.new(0, look.Y * fwd, 0)
+                end
+            end
+        end
+        local up = 0
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then up += 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then up -= 1 end
+        dir = dir + Vector3.new(0, up, 0)
+        root.AssemblyLinearVelocity = dir * cfg.FlySpeed       -- без ввода: зависаем на месте
+    end
+end
+
+local function fpsBoost()
+    pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+    pcall(function() Lighting.GlobalShadows = false end)
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
+            pcall(function() d.Enabled = false end)
+        end
+    end
+    for _, e in ipairs(Lighting:GetChildren()) do
+        if e:IsA("PostEffect") and e ~= skyBloom then
+            pcall(function() e.Enabled = false end)
+        end
+    end
+end
+
+-- ---------- Диагностика: копируется в буфер, можно прислать мне ----------
+local function join(list, max)
+    local out = {}
+    for i, v in ipairs(list) do
+        if i > (max or 30) then
+            out[#out + 1] = "..."
+            break
+        end
+        out[#out + 1] = v
+    end
+    return table.concat(out, ", ")
+end
+
+local function pathOf(inst)
+    local ok, r = pcall(function() return inst:GetFullName() end)
+    return ok and r or "?"
+end
+
+local function collectDiag()
+    local L = {}
+    local function add(s) L[#L + 1] = s end
+    add("Claude v1.2 | Executor: " .. Cap.Executor)
+    add("mousemoverel=" .. tostring(Cap.mousemoverel) .. " mouse1click=" .. tostring(Cap.mouse1click)
+        .. " hookInstalled=" .. tostring(env.ClaudeHookInstalled == true))
+    add("PlaceId: " .. tostring(game.PlaceId))
+    local pc = LocalPlayer.Character
+    add("LocalPlayer.Character: " .. (pc and pathOf(pc) or "nil"))
+    local mc = myChar()
+    add("myChar: " .. (mc and pathOf(mc) or "nil"))
+    if mc then
+        local hum = mc:FindFirstChildOfClass("Humanoid")
+        if hum then
+            add(string.format("Humanoid: WalkSpeed=%s JumpPower=%s JumpHeight=%s UseJumpPower=%s state=%s",
+                tostring(hum.WalkSpeed), tostring(hum.JumpPower), tostring(hum.JumpHeight),
+                tostring(hum.UseJumpPower), tostring(hum:GetState())))
+        else
+            add("Humanoid: НЕТ")
+        end
+        local names = {}
+        for _, c in ipairs(mc:GetChildren()) do names[#names + 1] = c.Name end
+        add("myChar children: " .. join(names, 30))
+    end
+    local cam = getCamera()
+    if cam then
+        local names = {}
+        for _, c in ipairs(cam:GetChildren()) do names[#names + 1] = c.Name .. "(" .. c.ClassName .. ")" end
+        add("Camera children: " .. join(names, 20))
+    end
+    local wsn = {}
+    for _, c in ipairs(Workspace:GetChildren()) do wsn[#wsn + 1] = c.Name .. "(" .. c.ClassName .. ")" end
+    add("Workspace: " .. join(wsn, 25))
+    add("Team: " .. tostring(LocalPlayer.Team) .. " | players=" .. #Players:GetPlayers())
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local ch = resolveCharacter(plr)
+            add("Other: " .. plr.Name .. " team=" .. tostring(plr.Team) .. " char=" .. (ch and pathOf(ch) or "nil"))
+            if ch then
+                local names = {}
+                for _, c in ipairs(ch:GetChildren()) do names[#names + 1] = c.Name end
+                add("Other char children: " .. join(names, 30))
+            end
+            break
+        end
+    end
+    return table.concat(L, "\n")
+end
+
+-- ---------- Сканер моделей и отладка хитбоксов ----------
+local dbgObjs, dbgParts, dbgT = {}, {}, 0
+
+local function isPlayerModel(m)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character == m or resolveCharacter(plr) == m then return plr end
+    end
+    return nil
+end
+
+local function clearDbgModels()
+    for m, o in pairs(dbgObjs) do
+        pcall(function() o.tag:Destroy() end)
+        pcall(function() o.hl:Destroy() end)
+        dbgObjs[m] = nil
+    end
+end
+
+local function clearDbgParts()
+    for p, a in pairs(dbgParts) do
+        pcall(function() a:Destroy() end)
+        dbgParts[p] = nil
+    end
+end
+
+local function updateDebug(cam)
+    local showModels, showBoxes = S.Misc.DbgModels, S.Misc.DbgHitbox
+    if not showModels and next(dbgObjs) then clearDbgModels() end
+    if not showBoxes and next(dbgParts) then clearDbgParts() end
+    if not showModels and not showBoxes then return end
+    local now = os.clock()
+
+    -- Все модели с Humanoid: зелёные = модель игрока, жёлтые = НЕ игрок
+    if showModels and now - dbgT > 0.5 then
+        dbgT = now
+        local my = myChar()
+        local seen, n = {}, 0
+        for m in pairs(ModelSet) do
+            if m.Parent and m ~= my and n < 40 then
+                local root = getRoot(m)
+                if root then
+                    n += 1
+                    seen[m] = true
+                    local o = dbgObjs[m]
+                    if not o then
+                        local tag = new("BillboardGui", {
+                            Size = UDim2.fromOffset(190, 38), AlwaysOnTop = true, LightInfluence = 0,
+                            StudsOffsetWorldSpace = Vector3.new(0, 4, 0), Adornee = root, Parent = ESPFolder,
+                        })
+                        local lbl = new("TextLabel", {
+                            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold,
+                            TextSize = 11, TextWrapped = true, TextStrokeTransparency = 0.3, Parent = tag,
+                        })
+                        local hl = new("Highlight", {
+                            Adornee = m, FillTransparency = 0.85, OutlineTransparency = 0,
+                            DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, Parent = ESPFolder,
+                        })
+                        o = { tag = tag, lbl = lbl, hl = hl }
+                        dbgObjs[m] = o
+                    end
+                    local owner = isPlayerModel(m)
+                    local color = owner and Color3.fromRGB(80, 255, 120) or Color3.fromRGB(255, 220, 60)
+                    o.tag.Adornee = root
+                    o.lbl.TextColor3 = color
+                    o.lbl.Text = m.Name .. "\n" .. (m.Parent and m.Parent.Name or "?")
+                        .. (owner and (" [игрок " .. owner.Name .. "]") or " [НЕ игрок]")
+                    o.hl.FillColor = color
+                    o.hl.OutlineColor = color
+                end
+            end
+        end
+        for m, o in pairs(dbgObjs) do
+            if not seen[m] then
+                pcall(function() o.tag:Destroy() end)
+                pcall(function() o.hl:Destroy() end)
+                dbgObjs[m] = nil
+            end
+        end
+    end
+
+    -- Хитбоксы ближайшей к прицелу цели: красный = Head, голубой = видимая часть,
+    -- жёлтый = НЕвидимая часть (скорее всего настоящий хитбокс)
+    if showBoxes then
+        local vp = cam.ViewportSize
+        local center = Vector2.new(vp.X / 2, vp.Y / 2)
+        local bestEnt, bestD = nil, math.huge
+        for _, ent in ipairs(getEntities("All")) do
+            local root = getRoot(ent.char)
+            if root then
+                local sp, on = cam:WorldToViewportPoint(root.Position)
+                if on and sp.Z > 0 then
+                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if d < bestD then bestD, bestEnt = d, ent end
+                end
+            end
+        end
+        local want, n = {}, 0
+        if bestEnt then
+            for _, p in ipairs(bestEnt.char:GetDescendants()) do
+                if p:IsA("BasePart") and n < 60 then
+                    n += 1
+                    want[p] = true
+                end
+            end
+        end
+        for p in pairs(want) do
+            local a = dbgParts[p]
+            if not a then
+                a = new("BoxHandleAdornment", {
+                    Adornee = p, AlwaysOnTop = true, ZIndex = 2, Transparency = 0.65, Size = p.Size, Parent = ESPFolder,
+                })
+                dbgParts[p] = a
+            end
+            a.Size = p.Size
+            if p.Name == "Head" then
+                a.Color3 = Color3.fromRGB(255, 60, 60)
+            elseif p.Transparency >= 0.99 then
+                a.Color3 = Color3.fromRGB(255, 210, 0)
+            else
+                a.Color3 = Color3.fromRGB(60, 200, 255)
+            end
+        end
+        for p, a in pairs(dbgParts) do
+            if not want[p] then
+                pcall(function() a:Destroy() end)
+                dbgParts[p] = nil
+            end
+        end
+    end
+end
+
+-- Подробный отчёт по моделям: копируется в буфер обмена
+local function collectModelReport()
+    local L = {}
+    local function add(s) L[#L + 1] = s end
+    local my = myChar()
+    local cam = getCamera()
+    local camPos = cam and cam.CFrame.Position or Vector3.zero
+
+    local list = {}
+    for m in pairs(ModelSet) do
+        if m.Parent then list[#list + 1] = m end
+    end
+    table.sort(list, function(a, b)
+        local ra, rb = getRoot(a), getRoot(b)
+        local da = ra and (ra.Position - camPos).Magnitude or 1e9
+        local db = rb and (rb.Position - camPos).Magnitude or 1e9
+        return da < db
+    end)
+    add("Claude v1.3 | модели с Humanoid: " .. #list)
+    add("== Модели с Humanoid (ближайшие первыми) ==")
+    for i, m in ipairs(list) do
+        if i > 25 then
+            add("...")
+            break
+        end
+        local owner = isPlayerModel(m)
+        local root = getRoot(m)
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        local kids = {}
+        for _, c in ipairs(m:GetChildren()) do kids[#kids + 1] = c.Name .. "(" .. c.ClassName .. ")" end
+        add(string.format("[%d] %s | %s | hp=%s | dist=%s%s", i, pathOf(m),
+            owner and ("игрок " .. owner.Name) or "НЕ ИГРОК",
+            hum and tostring(math.floor(hum.Health)) or "?",
+            root and tostring(math.floor((root.Position - camPos).Magnitude)) or "?",
+            (m == my) and " | МОЙ" or ""))
+        add("    дети: " .. join(kids, 14))
+        local attrs = {}
+        for k, v in pairs(m:GetAttributes()) do attrs[#attrs + 1] = tostring(k) .. "=" .. tostring(v) end
+        if #attrs > 0 then add("    атрибуты: " .. join(attrs, 8)) end
+    end
+
+    add("== Игроки без найденной модели ==")
+    local anyMissing = false
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and not resolveCharacter(plr) then
+            anyMissing = true
+            add("  " .. plr.Name .. " (team=" .. tostring(plr.Team) .. ")")
+        end
+    end
+    if not anyMissing then add("  таких нет") end
+
+    add("== Модели рядом с игроками (возможные настоящие хитбоксы) ==")
+    local found = 0
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local ch = (plr ~= LocalPlayer) and resolveCharacter(plr)
+        local root = ch and getRoot(ch)
+        if root then
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if found >= 20 then break end
+                if d:IsA("Model") and d ~= ch and d ~= my
+                    and not d:IsDescendantOf(ch) and not ch:IsDescendantOf(d) then
+                    local r2 = d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart")
+                    if r2 and (r2.Position - root.Position).Magnitude < 6 then
+                        found += 1
+                        add("  у " .. plr.Name .. ": " .. pathOf(d) .. " (" .. d.ClassName .. ")")
+                    end
+                end
+            end
+        end
+    end
+    if found == 0 then add("  не найдено") end
+    return table.concat(L, "\n")
+end
+
+-- ---------- Запуск эффектов ----------
+local function startExtras()
+    track(RunService.Heartbeat:Connect(movementStep))
+
+    -- Noclip
+    track(RunService.Stepped:Connect(function()
+        if not S.Misc.Noclip then
+            if noclipWas then
+                noclipWas = false
+                local ch = myChar()
+                if ch then
+                    for _, n in ipairs({ "Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart" }) do
+                        local p = ch:FindFirstChild(n)
+                        if p and p:IsA("BasePart") then p.CanCollide = true end
+                    end
+                end
+            end
+            return
+        end
+        noclipWas = true
+        local ch = myChar()
+        if not ch then return end
+        for _, p in ipairs(ch:GetDescendants()) do
+            if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+        end
+    end))
+
+    -- Бесконечный прыжок
+    track(UserInputService.JumpRequest:Connect(function()
+        if not S.Misc.InfJump then return end
+        local ch = myChar()
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end))
+
+    -- Запасной вариант для ПК: свой выстрел по нажатию ЛКМ, если перехват лучей недоступен
+    track(UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and not env.ClaudeHookInstalled then
+            local need = S.Misc.BTracers or S.Misc.ShotSound ~= "Off" or S.Misc.Hitmarker or S.Misc.HitSound ~= "Off"
+            if need then pcall(crosshairTracer) end
+        end
+    end))
+
+    if S.Misc.BTracers or S.Misc.ShotSound ~= "Off" or S.Misc.Hitmarker or S.Misc.HitSound ~= "Off" then
+        installTracerHook()
+    end
+end
+
+-- ---------- Общий шаг визуала (после камеры игры) ----------
+local fpsAcc, fpsN, fpsShown, hudT = 0, 0, 60, 0
+local function visStep(dt)
+    if not Alive then return end
+    local cam = getCamera()
+    if not cam then return end
+    local vp = cam.ViewportSize
+    if not origFOV then origFOV = cam.FieldOfView end
+
+    -- FOV камеры
+    if S.Misc.FOVOn then
+        cam.FieldOfView = S.Misc.FOV
+        fovApplied = true
+    elseif fovApplied then
+        cam.FieldOfView = origFOV
+        fovApplied = false
+    end
+
+    -- FOV-круг аимбота
+    local showFov = S.Aim.Enabled and S.Aim.ShowFOV and S.Aim.Type ~= "Rage"
+    FOVCircle.Visible = showFov
+    if showFov then
+        FOVCircle.Position = UDim2.fromOffset(vp.X / 2, vp.Y / 2)
+        FOVCircle.Size = UDim2.fromOffset(S.Aim.FOV * 2, S.Aim.FOV * 2)
+        FOVStroke.Color = Theme.Accent
+    end
+
+    updateThirdPerson(cam)
+    updateHands(cam)
+    updateAura()
+    updateSkyFrame()
+    updateHitmarker(vp)
+    updateMute(cam)
+    updateAimDot(cam)
+    updateDebug(cam)
+    updateESP(cam, vp)
+    updateRadar(cam)
+    updateCrosshair(vp)
+
+    -- HUD
+    HUDLabel.Visible = S.Misc.HUD
+    if S.Misc.HUD then
+        fpsAcc += dt
+        fpsN += 1
+        if fpsAcc >= 0.5 then
+            fpsShown = math.floor(fpsN / fpsAcc + 0.5)
+            fpsAcc, fpsN = 0, 0
+        end
+        hudT += dt
+        if hudT > 0.5 then
+            hudT = 0
+            local ping = 0
+            pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
+            HUDLabel.Text = "FPS " .. fpsShown .. "   •   Ping " .. ping .. " ms"
+        end
+    end
+end
+
+-- ---------- Свет (Fullbright / без тумана) ----------
+origLight = {
+    Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime, FogEnd = Lighting.FogEnd,
+    FogStart = Lighting.FogStart, GlobalShadows = Lighting.GlobalShadows,
+    Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
+}
+function restoreLight()
+    for k, v in pairs(origLight) do
+        pcall(function() Lighting[k] = v end)
+    end
+end
+
+-- ============================================================
+-- 6. АИМБОТ И ТРИГГЕРБОТ
+-- ============================================================
+local aimKeyHeld, aimBtnHeld, aimBtnInput = false, false, nil
+local currentTarget = nil
+
+local doClick                       -- объявлен заранее, реализация ниже
+local lastFlick, lastRageShot = 0, 0
+
+-- Какие части тела рассматриваем
+local function candidateParts(char)
+    local list, seen = {}, {}
+    local function add(p)
+        if p and not seen[p] then
+            seen[p] = true
+            list[#list + 1] = p
+        end
+    end
+    local pref = getAimPart(char, (S.Aim.Part == "Closest") and "Head" or S.Aim.Part)
+    if S.Aim.Type == "Rage" then
+        add(pref)                                   -- в рейдже: сначала выбранная часть, потом любая видимая
+        add(char:FindFirstChild("Head"))
+        add(getTorso(char))
+        add(getRoot(char))
+    elseif S.Aim.Part == "Closest" then
+        add(char:FindFirstChild("Head"))
+        add(getTorso(char))
+        add(getRoot(char))
+    else
+        add(pref)
+    end
+    return list
+end
+
+-- Чем меньше значение — тем приоритетнее цель
+local function scoreOf(cam, center, part, char)
+    local pr = S.Aim.Priority
+    if pr == "LowHP" then
+        local hp = getHealth(char)
+        return hp
+    elseif pr == "Dist" then
+        return (part.Position - cam.CFrame.Position).Magnitude
+    end
+    if S.Aim.Type == "Rage" then
+        local dir = (part.Position - cam.CFrame.Position).Unit
+        return math.deg(math.acos(math.clamp(cam.CFrame.LookVector:Dot(dir), -1, 1)))
+    end
+    local sp = cam:WorldToViewportPoint(part.Position)
+    return (Vector2.new(sp.X, sp.Y) - center).Magnitude
+end
+
+local function validTarget(t, cam, center)
+    if not t or not t.char or not t.char.Parent then return false end
+    if not t.part or not t.part.Parent or not t.part:IsDescendantOf(t.char) then return false end
+    if not isAlive(t.char) then return false end
+    if not entPass(t.ent, S.Aim.TeamCheck) then return false end
+    if (t.part.Position - cam.CFrame.Position).Magnitude > S.Aim.MaxDist then return false end
+    if S.Aim.Type ~= "Rage" then
+        local sp, on = cam:WorldToViewportPoint(t.part.Position)
+        if not on or sp.Z <= 0 then return false end
+        if (Vector2.new(sp.X, sp.Y) - center).Magnitude > S.Aim.FOV * 1.25 then return false end
+    end
+    if S.Aim.WallCheck and not isVisible(t.part, t.char) then return false end
+    return true
+end
+
+local function findTarget(cam, center)
+    local best, bestScore = nil, math.huge
+    local camPos = cam.CFrame.Position
+    local rage = (S.Aim.Type == "Rage")
+    for _, ent in ipairs(getEntities(S.Aim.Targets)) do
+        local char = ent.char
+        if entPass(ent, S.Aim.TeamCheck) and isAlive(char) then
+            local pPart, pScore = nil, math.huge
+            for _, part in ipairs(candidateParts(char)) do
+                if (part.Position - camPos).Magnitude <= S.Aim.MaxDist then
+                    local okFov = true
+                    if not rage then
+                        local sp, on = cam:WorldToViewportPoint(part.Position)
+                        okFov = on and sp.Z > 0 and (Vector2.new(sp.X, sp.Y) - center).Magnitude <= S.Aim.FOV
+                    end
+                    if okFov and (not S.Aim.WallCheck or isVisible(part, char)) then
+                        local sc = scoreOf(cam, center, part, char)
+                        if sc < pScore then pPart, pScore = part, sc end
+                        if rage then break end      -- в рейдже берём первую видимую часть по порядку
+                    end
+                end
+            end
+            if pPart and pScore < bestScore then
+                best = { ent = ent, char = char, part = pPart }
+                bestScore = pScore
+            end
+        end
+    end
+    return best
+end
+
+-- Скорость цели по истории позиций
+local velTrack = setmetatable({}, { __mode = "k" })
+local function measuredVelocity(part)
+    local now = os.clock()
+    local pos = part.Position
+    local v = velTrack[part]
+    if not v then
+        velTrack[part] = { pos = pos, t = now, vel = Vector3.zero }
+        return Vector3.zero
+    end
+    local dt = now - v.t
+    if dt > 0.001 then
+        v.vel = v.vel:Lerp((pos - v.pos) / dt, 0.35)
+        v.pos, v.t = pos, now
+    end
+    return v.vel
+end
+
+-- Пинг (мс), обновляется раз в секунду
+local pingCache, pingT = 0, 0
+local function getPing()
+    local now = os.clock()
+    if now - pingT > 1 then
+        pingT = now
+        pcall(function() pingCache = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+    end
+    return pingCache
+end
+
+local function aimStep(dt)
+    if not Alive then return end
+    local cam = getCamera()
+    if not cam then return end
+    aimDotWorld = nil
+    tpUndo(cam)                                   -- откат сдвига 3-го лица до расчётов
+    if not S.Aim.Enabled then
+        currentTarget = nil
+        return
+    end
+    local active = (S.Aim.Mode == "Always") or aimKeyHeld or aimBtnHeld
+    if not active then
+        currentTarget = nil
+        return
+    end
+    local vp = cam.ViewportSize
+    local center = Vector2.new(vp.X / 2, vp.Y / 2)
+    local aimType = S.Aim.Type
+    local rage = (aimType == "Rage")
+
+    -- Липкая цель (в рейдже цель пересматривается каждый кадр)
+    if not (S.Aim.Sticky and not rage and validTarget(currentTarget, cam, center)) then
+        currentTarget = findTarget(cam, center)
+    end
+    local t = currentTarget
+    if not t then return end
+
+    local aimPos = t.part.Position + Vector3.new(0, S.Aim.YOffset, 0)
+    local pm = S.Aim.PredictMode
+    if pm ~= "Off" then
+        -- скорость считаем сами по смещению цели (AssemblyLinearVelocity у чужих игроков часто врёт)
+        local vel = measuredVelocity(t.part)
+        local lead = (pm == "Auto") and (getPing() / 1000 + 0.03) or (S.Aim.Predict / 100)
+        aimPos = aimPos + vel * lead
+    end
+    aimDotWorld = aimPos
+
+    local alpha
+    if rage then
+        alpha = 1                                  -- мгновенный доворот
+    elseif aimType == "Flick" then
+        if os.clock() - lastFlick < S.Aim.FlickDelay / 1000 then return end
+        lastFlick = os.clock()
+        alpha = 1                                  -- одиночный резкий доворот раз в интервал
+    else
+        local base = 1 - math.clamp(S.Aim.Smooth, 0, 97) / 100
+        alpha = 1 - (1 - base) ^ (math.clamp(dt, 0, 0.1) * 60)
+        if S.Aim.Precise then
+            -- когда прицел почти на цели — доводим точно, чтобы не мазать из-за плавности
+            local sp, on = cam:WorldToViewportPoint(aimPos)
+            if on and sp.Z > 0 and (Vector2.new(sp.X, sp.Y) - center).Magnitude < 22 then alpha = 1 end
+        end
+    end
+
+    if S.Aim.Method == "Mouse" and Cap.mousemoverel then
+        local sp = cam:WorldToViewportPoint(aimPos)
+        pcall(mousemoverel, (sp.X - center.X) * alpha, (sp.Y - center.Y) * alpha)
+    else
+        local cf = cam.CFrame
+        cam.CFrame = cf:Lerp(CFrame.new(cf.Position, aimPos), alpha)
+    end
+
+    -- Рейдж: авто-выстрел по захваченной цели
+    if rage and S.Aim.RageFire and (os.clock() - lastRageShot) * 1000 >= S.Trigger.Delay then
+        lastRageShot = os.clock()
+        task.spawn(doClick)
+    end
+end
+
+-- Триггербот: ищем цель под прицелом
+local function crosshairEntity()
+    local cam = getCamera()
+    if not cam then return nil end
+    local vp = cam.ViewportSize
+    local ray = cam:ViewportPointToRay(vp.X / 2, vp.Y / 2)
+    local ignore = { cam }
+    if myChar() then ignore[#ignore + 1] = myChar() end
+    rayParams.FilterDescendantsInstances = ignore
+    local r = ownRay(ray.Origin, ray.Direction * 2000, rayParams)
+    if not r then return nil end
+    local inst = r.Instance
+    while inst and inst ~= Workspace do
+        local p = Players:FindFirstChild(inst.Name)
+        if p and p:IsA("Player") and p ~= LocalPlayer then
+            local ch = resolveCharacter(p)
+            if ch then return { plr = p, char = ch, key = p } end
+        end
+        if S.Aim.Targets == "All" and ModelSet[inst] then
+            return { plr = nil, char = inst, key = inst }
+        end
+        inst = inst.Parent
+    end
+    return nil
+end
+
+function doClick()
+    lastShotT = os.clock()
+    if not env.ClaudeHookInstalled or S.Misc.BTracers or S.Misc.ShotSound ~= "Off" then
+        if not env.ClaudeHookInstalled then pcall(crosshairTracer) end
+    end
+    if Cap.mouse1click then
+        pcall(mouse1click)
+        return
+    end
+    if VIM then
+        local cam = getCamera()
+        if not cam then return end
+        local vp = cam.ViewportSize
+        pcall(function()
+            VIM:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true, game, 0)
+            task.wait(0.02)
+            VIM:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 0)
+        end)
+    end
+end
+
+local lastShot = 0
+local function startLoops()
+    -- Триггербот
+    task.spawn(function()
+        while Alive do
+            task.wait(0.01)
+            if S.Trigger.Enabled then
+                local ok, ent = pcall(crosshairEntity)
+                if ok and ent and entPass(ent, true) then
+                    if isAlive(ent.char) and (os.clock() - lastShot) * 1000 >= S.Trigger.Delay then
+                        lastShot = os.clock()
+                        doClick()
+                    end
+                end
+            end
+        end
+    end)
+
+    -- Свет
+    task.spawn(function()
+        local applied = false
+        while Alive do
+            local fb, nf = S.Misc.Fullbright, S.Misc.NoFog
+            if fb or nf then
+                applied = true
+                pcall(function()
+                    Lighting.Brightness = fb and 2 or origLight.Brightness
+                    if S.Misc.Sky == "Off" then Lighting.ClockTime = fb and 14 or origLight.ClockTime end
+                    Lighting.GlobalShadows = (not fb) and origLight.GlobalShadows
+                    Lighting.Ambient = fb and Color3.fromRGB(178, 178, 178) or origLight.Ambient
+                    Lighting.OutdoorAmbient = fb and Color3.fromRGB(178, 178, 178) or origLight.OutdoorAmbient
+                    Lighting.FogEnd = nf and 9e9 or origLight.FogEnd
+                    Lighting.FogStart = nf and 9e9 or origLight.FogStart
+                end)
+            elseif applied then
+                applied = false
+                restoreLight()
+            end
+            pcall(applySky)
+            task.wait(0.4)
+        end
+    end)
+
+    -- Привязки к рендеру (после камеры игры, чтобы она не перезаписала наш поворот)
+    pcall(function() RunService:UnbindFromRenderStep("ClaudeAim") end)
+    pcall(function() RunService:UnbindFromRenderStep("ClaudeVis") end)
+    RunService:BindToRenderStep("ClaudeAim", Enum.RenderPriority.Last.Value, aimStep)
+    RunService:BindToRenderStep("ClaudeVis", Enum.RenderPriority.Last.Value + 1, visStep)
+
+    startExtras()
+    track(Players.PlayerRemoving:Connect(destroyESP))
+end
+
+-- Ввод: кнопка/клавиша удержания аима
+local setMenu, menuOpen
+track(UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        if UserInputService:GetFocusedTextBox() then return end
+        if input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
+            if setMenu then setMenu(not menuOpen) end
+        end
+        if S.Aim.Key == input.KeyCode.Name then aimKeyHeld = true end
+    elseif input.UserInputType == Enum.UserInputType.MouseButton2 and S.Aim.Key == "MouseButton2" then
+        aimKeyHeld = true
+    end
+end))
+track(UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        if S.Aim.Key == input.KeyCode.Name then aimKeyHeld = false end
+    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+        aimKeyHeld = false
+    end
+    if aimBtnInput and input == aimBtnInput then
+        aimBtnHeld = false
+        aimBtnInput = nil
+    end
+end))
+
+-- ============================================================
+-- 7. МЕНЮ
+-- ============================================================
+local UI, Main, MainScale
+
+local function makeDraggable(handle, target, onTap)
+    local dragging, dragStart, startPos, dragInput, moved = false, nil, nil, nil, false
+    track(handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, moved = true, false
+            dragStart, startPos, dragInput = input.Position, target.Position, input
+            local ch
+            ch = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    ch:Disconnect()
+                    if not moved and onTap then onTap() end
+                end
+            end)
+        end
+    end))
+    track(UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.Touch and input ~= dragInput then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            local d = input.Position - dragStart
+            if d.Magnitude > 7 then moved = true end
+            if moved then
+                target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end
+    end))
+end
+
+local function buildMenu()
+    UI = makeGui("ClaudeMenu", 100)
+    local cam = getCamera()
+    local vp = cam and cam.ViewportSize or Vector2.new(800, 400)
+    local W = math.min(Dev.W, vp.X * 0.92)
+    local H = math.min(Dev.H, vp.Y * 0.88)
+    local ord = 0
+    local function nextOrd() ord += 1 return ord end
+
+    Main = new("CanvasGroup", {
+        Name = "Main", Size = UDim2.fromOffset(W, H), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5), BackgroundColor3 = Theme.BG, BorderSizePixel = 0,
+        GroupTransparency = 1, Visible = false, Parent = UI,
+    }, {
+        corner(14),
+        new("UIScale", { Name = "Scale", Scale = 0.86 }),
+    })
+    MainScale = Main:FindFirstChild("Scale")
+    local mainStroke = stroke(Theme.Accent, 1.6, 0.25)
+    mainStroke.Parent = Main
+    accent(mainStroke, "Color")
+
+    -- Верхняя панель
+    local topBar = new("Frame", {
+        Size = UDim2.new(1, 0, 0, Dev.top), BackgroundColor3 = Theme.Panel, BorderSizePixel = 0, Parent = Main,
+    })
+    local title = new("TextLabel", {
+        Size = UDim2.fromOffset(110, Dev.top), Position = UDim2.fromOffset(14, 0), BackgroundTransparency = 1,
+        Text = "CLAUDE", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack,
+        TextSize = Dev.txt + 6, TextXAlignment = Enum.TextXAlignment.Left, Parent = topBar,
+    })
+    local titleGrad = new("UIGradient", { Color = ColorSequence.new(Theme.Accent, Color3.fromRGB(90, 200, 255)), Parent = title })
+    AccentHooks[#AccentHooks + 1] = function(c) titleGrad.Color = ColorSequence.new(c, Color3.fromRGB(90, 200, 255)) end
+    new("TextLabel", {
+        Size = UDim2.fromOffset(160, Dev.top), Position = UDim2.fromOffset(112, 0), BackgroundTransparency = 1,
+        Text = "Blox Strike  •  v1.3", TextColor3 = Theme.Sub, Font = Enum.Font.Gotham,
+        TextSize = Dev.txt - 2, TextXAlignment = Enum.TextXAlignment.Left, Parent = topBar,
+    })
+    local minBtn = new("TextButton", {
+        Size = UDim2.fromOffset(Dev.top - 10, Dev.top - 10), AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -8, 0.5, 0), BackgroundColor3 = Theme.Elem, Text = "—",
+        TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 18, AutoButtonColor = true,
+        BorderSizePixel = 0, Parent = topBar,
+    }, { corner(8) })
+    makeDraggable(topBar, Main)
+
+    -- Боковая панель с вкладками
+    local sidebar = new("Frame", {
+        Size = UDim2.new(0, Dev.side, 1, -Dev.top), Position = UDim2.fromOffset(0, Dev.top),
+        BackgroundColor3 = Theme.Panel, BorderSizePixel = 0, Parent = Main,
+    }, {
+        new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }),
+        new("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+    })
+    local content = new("Frame", {
+        Size = UDim2.new(1, -Dev.side, 1, -Dev.top), Position = UDim2.fromOffset(Dev.side, Dev.top),
+        BackgroundTransparency = 1, ClipsDescendants = true, Parent = Main,
+    })
+
+    local Tabs = {}
+    local function selectTab(name)
+        for n, t in pairs(Tabs) do
+            local on = (n == name)
+            t.page.Visible = on
+            t.bar.Visible = on
+            t.btn.TextColor3 = on and Theme.Text or Theme.Sub
+            tween(t.btn, 0.15, { BackgroundColor3 = on and Color3.fromRGB(40, 40, 60) or Theme.Elem })
+        end
+    end
+
+    local function addTab(name)
+        local page = new("ScrollingFrame", {
+            Name = name, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = (Dev.kind == "phone") and 4 or 3, ScrollBarImageColor3 = Theme.Accent,
+            CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, Visible = false, Parent = content,
+        }, {
+            new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }),
+            new("UIPadding", {
+                PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 14),
+                PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12),
+            }),
+        })
+        local btn = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, Dev.row - 8), BackgroundColor3 = Theme.Elem, BorderSizePixel = 0,
+            Text = name, TextColor3 = Theme.Sub, Font = Enum.Font.GothamBold, TextSize = Dev.txt,
+            AutoButtonColor = false, LayoutOrder = nextOrd(), Parent = sidebar,
+        }, { corner(10) })
+        local bar = new("Frame", {
+            Size = UDim2.new(0, 3, 0.55, 0), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 4, 0.5, 0),
+            BorderSizePixel = 0, Visible = false, Parent = btn,
+        }, { corner(2) })
+        accent(bar, "BackgroundColor3")
+        Tabs[name] = { page = page, btn = btn, bar = bar }
+        track(btn.Activated:Connect(function() selectTab(name) end))
+        return page
+    end
+
+    -- Перетаскивание слайдеров (один общий обработчик)
+    local activeDrag, activeObj, activePage = nil, nil, nil
+    track(UserInputService.InputChanged:Connect(function(input)
+        if not activeDrag then return end
+        if input.UserInputType == Enum.UserInputType.Touch and input ~= activeObj then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            activeDrag(input.Position.X)
+        end
+    end))
+    track(UserInputService.InputEnded:Connect(function(input)
+        if activeDrag and (input == activeObj or input.UserInputType == Enum.UserInputType.MouseButton1) then
+            activeDrag = nil
+            if activePage then activePage.ScrollingEnabled = true end
+            saveConfig()
+        end
+    end))
+
+    -- ---------- Элементы ----------
+    local function Section(page, text)
+        new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, Text = string.upper(text),
+            TextColor3 = Theme.Sub, Font = Enum.Font.GothamBold, TextSize = Dev.txt - 3,
+            TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = nextOrd(), Parent = page,
+        })
+    end
+
+    local function Label(page, text)
+        new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, Dev.row), BackgroundTransparency = 1, Text = text,
+            TextColor3 = Theme.Sub, Font = Enum.Font.Gotham, TextSize = Dev.txt - 2, TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = nextOrd(), Parent = page,
+        })
+    end
+
+    local function rowFrame(page, h)
+        return new("Frame", {
+            Size = UDim2.new(1, 0, 0, h or Dev.row), BackgroundColor3 = Theme.Elem, BorderSizePixel = 0,
+            LayoutOrder = nextOrd(), Parent = page,
+        }, { corner(10) })
+    end
+
+    local function rowText(row, text)
+        return new("TextLabel", {
+            BackgroundTransparency = 1, Size = UDim2.new(1, -150, 0, Dev.row), Position = UDim2.fromOffset(12, 0),
+            Text = text, TextColor3 = Theme.Text, Font = Enum.Font.GothamMedium, TextSize = Dev.txt,
+            TextXAlignment = Enum.TextXAlignment.Left, Parent = row,
+        })
+    end
+
+    local function Toggle(page, text, tbl, key, cb)
+        local row = rowFrame(page)
+        local lbl = rowText(row, text)
+        lbl.Size = UDim2.new(1, -70, 1, 0)
+        local sw = new("Frame", {
+            Size = UDim2.fromOffset(48, 26), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+            BackgroundColor3 = Color3.fromRGB(55, 55, 76), BorderSizePixel = 0, Parent = row,
+        }, { corner(13) })
+        local knob = new("Frame", {
+            Size = UDim2.fromOffset(20, 20), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0),
+            BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = sw,
+        }, { corner(10) })
+        local btn = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", Parent = row })
+        local function refresh(anim)
+            local on = tbl[key]
+            local c = on and Theme.Accent or Color3.fromRGB(55, 55, 76)
+            local p = on and UDim2.new(0, 25, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+            if anim then
+                tween(sw, 0.18, { BackgroundColor3 = c })
+                tween(knob, 0.18, { Position = p })
+            else
+                sw.BackgroundColor3 = c
+                knob.Position = p
+            end
+        end
+        refresh(false)
+        AccentHooks[#AccentHooks + 1] = function() refresh(false) end
+        track(btn.Activated:Connect(function()
+            tbl[key] = not tbl[key]
+            refresh(true)
+            if cb then pcall(cb, tbl[key]) end
+            saveConfig()
+        end))
+    end
+
+    local function Slider(page, text, tbl, key, min, max, step, suffix)
+        local row = rowFrame(page, Dev.row + 16)
+        local lbl = rowText(row, text)
+        lbl.Size = UDim2.new(1, -90, 0, Dev.row - 6)
+        local valLbl = new("TextLabel", {
+            BackgroundTransparency = 1, Size = UDim2.fromOffset(80, Dev.row - 6), AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -12, 0, 0), TextColor3 = Theme.Accent, Font = Enum.Font.GothamBold,
+            TextSize = Dev.txt, TextXAlignment = Enum.TextXAlignment.Right, Parent = row,
+        })
+        accent(valLbl, "TextColor3")
+        local bar = new("Frame", {
+            Size = UDim2.new(1, -28, 0, 8), Position = UDim2.new(0, 14, 1, -20), BackgroundColor3 = Color3.fromRGB(50, 50, 70),
+            BorderSizePixel = 0, Parent = row,
+        }, { corner(4) })
+        local fill = new("Frame", { Size = UDim2.fromScale(0, 1), BorderSizePixel = 0, Parent = bar }, { corner(4) })
+        accent(fill, "BackgroundColor3")
+        local knob = new("Frame", {
+            Size = UDim2.fromOffset(18, 18), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+            BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = bar,
+        }, { corner(9) })
+        local hit = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, 34), Position = UDim2.new(0, 0, 1, -36), BackgroundTransparency = 1, Text = "", Parent = row,
+        })
+        local function update()
+            local a = math.clamp((tbl[key] - min) / (max - min), 0, 1)
+            fill.Size = UDim2.fromScale(a, 1)
+            knob.Position = UDim2.new(a, 0, 0.5, 0)
+            valLbl.Text = string.format("%g", tbl[key]) .. (suffix or "")
+        end
+        update()
+        local function setFromX(x)
+            local a = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+            local v = min + (max - min) * a
+            v = math.floor(v / step + 0.5) * step
+            tbl[key] = math.clamp(v, min, max)
+            update()
+        end
+        track(hit.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                activeDrag, activeObj, activePage = setFromX, input, page
+                page.ScrollingEnabled = false
+                setFromX(input.Position.X)
+            end
+        end))
+    end
+
+    local function Cycle(page, text, tbl, key, options, cb)
+        local row = rowFrame(page)
+        local lbl = rowText(row, text)
+        lbl.Size = UDim2.new(1, -(Dev.cyc + 20), 1, 0)
+        local btn = new("TextButton", {
+            Size = UDim2.fromOffset(Dev.cyc, Dev.row - 12), AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -10, 0.5, 0), BackgroundColor3 = Color3.fromRGB(42, 42, 62), BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold, TextSize = Dev.txt - 1, AutoButtonColor = true, Text = "", Parent = row,
+        }, { corner(8) })
+        accent(btn, "TextColor3")
+        local function label()
+            for _, o in ipairs(options) do
+                if o[1] == tbl[key] then return o[2] end
+            end
+            return tostring(tbl[key])
+        end
+        btn.Text = label()
+        track(btn.Activated:Connect(function()
+            local idx = 1
+            for i, o in ipairs(options) do
+                if o[1] == tbl[key] then idx = i break end
+            end
+            idx = idx % #options + 1
+            tbl[key] = options[idx][1]
+            btn.Text = options[idx][2]
+            if cb then pcall(cb, tbl[key]) end
+            saveConfig()
+        end))
+    end
+
+    local function Button(page, text, cb)
+        local btn = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, Dev.row), BorderSizePixel = 0, Text = text, TextColor3 = Color3.new(1, 1, 1),
+            Font = Enum.Font.GothamBold, TextSize = Dev.txt, AutoButtonColor = true, LayoutOrder = nextOrd(), Parent = page,
+        }, { corner(10) })
+        accent(btn, "BackgroundColor3")
+        track(btn.Activated:Connect(function() pcall(cb) end))
+    end
+
+    local function Input(page, text, tbl, key, placeholder)
+        local row = rowFrame(page)
+        local lbl = rowText(row, text)
+        lbl.Size = UDim2.new(1, -(Dev.cyc + 20), 1, 0)
+        local box = new("TextBox", {
+            Size = UDim2.fromOffset(Dev.cyc, Dev.row - 12), AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -10, 0.5, 0), BackgroundColor3 = Color3.fromRGB(42, 42, 62), BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold, TextSize = Dev.txt - 1, TextColor3 = Theme.Text,
+            PlaceholderText = placeholder or "...", PlaceholderColor3 = Theme.Sub,
+            Text = tostring(tbl[key]), ClearTextOnFocus = false, Parent = row,
+        }, { corner(8) })
+        track(box.FocusLost:Connect(function()
+            tbl[key] = box.Text
+            saveConfig()
+        end))
+    end
+
+    -- ---------- Вкладка: Аимбот ----------
+    local pAim = addTab("Аимбот")
+    Section(pAim, "Аимбот")
+    Toggle(pAim, "Включить аимбот", S.Aim, "Enabled")
+    Cycle(pAim, "Режим", S.Aim, "Mode", { { "Hold", "Удержание" }, { "Always", "Всегда" } })
+    Cycle(pAim, "Тип аимбота", S.Aim, "Type", { { "Normal", "Обычный" }, { "Rage", "Рейдж" }, { "Flick", "Флик" } })
+    Cycle(pAim, "Приоритет цели", S.Aim, "Priority", { { "Cross", "К прицелу" }, { "LowHP", "Низкое HP" }, { "Dist", "Ближний" } })
+    Cycle(pAim, "Цели", S.Aim, "Targets", { { "Players", "Игроки" }, { "All", "Все модели" } })
+    Toggle(pAim, "Рейдж: авто-выстрел", S.Aim, "RageFire")
+    Slider(pAim, "Флик: интервал", S.Aim, "FlickDelay", 50, 600, 10, "ms")
+    Cycle(pAim, "Способ наводки", S.Aim, "Method", { { "Camera", "Камера" }, { "Mouse", "Мышь" } })
+    Cycle(pAim, "Часть тела", S.Aim, "Part", { { "Head", "Голова" }, { "Torso", "Тело" }, { "Closest", "Ближайшая" } })
+    if Dev.kind == "pc" then
+        Cycle(pAim, "Клавиша аима", S.Aim, "Key", {
+            { "MouseButton2", "ПКМ" }, { "Q", "Q" }, { "E", "E" }, { "LeftAlt", "Alt" }, { "LeftShift", "Shift" },
+        })
+    end
+    Slider(pAim, "Плавность", S.Aim, "Smooth", 0, 95, 1, "%")
+    Slider(pAim, "Радиус FOV", S.Aim, "FOV", 40, 400, 5, "px")
+    Cycle(pAim, "Упреждение", S.Aim, "PredictMode", { { "Off", "Выкл" }, { "Auto", "Авто (пинг)" }, { "Manual", "Ручное" } })
+    Slider(pAim, "Упреждение (ручное)", S.Aim, "Predict", 0, 30, 1, "")
+    Slider(pAim, "Смещение точки (вверх/вниз)", S.Aim, "YOffset", -2, 2, 0.1, "")
+    Toggle(pAim, "Точная доводка у цели", S.Aim, "Precise")
+    Toggle(pAim, "Показывать точку наводки", S.Aim, "ShowDot")
+    Slider(pAim, "Макс. дистанция", S.Aim, "MaxDist", 100, 3000, 50, "m")
+    Toggle(pAim, "Показывать круг FOV", S.Aim, "ShowFOV")
+    Toggle(pAim, "Не целиться в своих", S.Aim, "TeamCheck")
+    Toggle(pAim, "Проверка стен", S.Aim, "WallCheck")
+    Toggle(pAim, "Липкая цель", S.Aim, "Sticky")
+    Section(pAim, "Триггербот")
+    Toggle(pAim, "Авто-выстрел по врагу", S.Trigger, "Enabled")
+    Slider(pAim, "Задержка выстрела", S.Trigger, "Delay", 0, 400, 10, "ms")
+    if Dev.kind == "phone" then
+        Section(pAim, "Телефон")
+        Toggle(pAim, "Кнопка AIM на экране", S.Aim, "ShowButton")
+    end
+
+    -- ---------- Вкладка: ESP ----------
+    local pEsp = addTab("ESP")
+    Section(pEsp, "ESP")
+    Toggle(pEsp, "Включить ESP", S.ESP, "Enabled")
+    Cycle(pEsp, "Кого показывать", S.ESP, "Targets", { { "Players", "Игроки" }, { "All", "Все модели" } })
+    Toggle(pEsp, "Боксы", S.ESP, "Box")
+    Toggle(pEsp, "Ники", S.ESP, "Name")
+    Toggle(pEsp, "Здоровье", S.ESP, "Health")
+    Toggle(pEsp, "Дистанция", S.ESP, "Distance")
+    Toggle(pEsp, "Трассеры", S.ESP, "Tracers")
+    Toggle(pEsp, "Чамсы (подсветка)", S.ESP, "Chams")
+    Toggle(pEsp, "Контур", S.ESP, "Outline")
+    Toggle(pEsp, "Скрывать своих", S.ESP, "TeamCheck")
+    Slider(pEsp, "Макс. дистанция", S.ESP, "MaxDist", 100, 5000, 100, "m")
+    Cycle(pEsp, "Цвет ESP", S.ESP, "Color", PaletteOptions)
+
+    -- ---------- Вкладка: Визуал ----------
+    local pVis = addTab("Визуал")
+    Section(pVis, "Радар")
+    Toggle(pVis, "Радар врагов", S.Misc, "Radar")
+    Slider(pVis, "Дальность радара", S.Misc, "RadarRange", 50, 400, 10, "m")
+    Section(pVis, "Прицел")
+    Toggle(pVis, "Свой прицел", S.Misc, "Crosshair")
+    Slider(pVis, "Размер прицела", S.Misc, "CrossSize", 4, 24, 1, "px")
+    Section(pVis, "Мир и камера")
+    Toggle(pVis, "Свой FOV камеры", S.Misc, "FOVOn")
+    Slider(pVis, "FOV камеры", S.Misc, "FOV", 60, 120, 1, "°")
+    Toggle(pVis, "Fullbright (без тьмы)", S.Misc, "Fullbright")
+    Toggle(pVis, "Убрать туман", S.Misc, "NoFog")
+    Toggle(pVis, "HUD: FPS и пинг", S.Misc, "HUD")
+
+    -- ---------- Вкладка: Эффекты ----------
+    local pFx = addTab("Эффекты")
+    Section(pFx, "Небо")
+    Cycle(pFx, "Небо", S.Misc, "Sky", SkyOptions, function() pcall(applySky) end)
+    Section(pFx, "Руки и оружие (от 1 лица)")
+    Cycle(pFx, "Режим рук", S.Misc, "HandsMode", {
+        { "Off", "Выкл" }, { "Rainbow", "Радуга" }, { "Color", "Цвет" }, { "Ghost", "Прозрачные" },
+    })
+    Cycle(pFx, "Материал", S.Misc, "HandsMat", {
+        { "Default", "Обычный" }, { "Neon", "Неон" }, { "ForceField", "Поле" }, { "Glass", "Стекло" },
+    })
+    Cycle(pFx, "Цвет рук", S.Misc, "HandsColor", PaletteOptions)
+    Slider(pFx, "Прозрачность рук", S.Misc, "HandsTrans", 0, 0.95, 0.05, "")
+    Section(pFx, "Аура")
+    Toggle(pFx, "Радужная аура", S.Misc, "Aura")
+    Toggle(pFx, "Частицы ауры", S.Misc, "AuraParticles")
+    Section(pFx, "Вид от 3 лица")
+    Toggle(pFx, "Третье лицо", S.Misc, "ThirdPerson")
+    Slider(pFx, "Дистанция камеры", S.Misc, "TPDist", 4, 30, 1, "")
+    Section(pFx, "Трассеры пуль")
+    Toggle(pFx, "Трассеры пуль", S.Misc, "BTracers", function(on)
+        if on then installTracerHook() end
+    end)
+    Cycle(pFx, "Чьи пули", S.Misc, "BTracerWho", { { "All", "Все" }, { "Mine", "Мои" } })
+    Toggle(pFx, "Радужные трассеры", S.Misc, "BTracerRainbow")
+    Slider(pFx, "Время жизни", S.Misc, "BTracerTime", 0.2, 3, 0.1, "s")
+    Section(pFx, "Звуки выстрелов")
+    Cycle(pFx, "Звук выстрела", S.Misc, "ShotSound", SoundOptions, function(v)
+        if v ~= "Off" then installTracerHook() end
+    end)
+    Input(pFx, "Свой ID звука", S.Misc, "CustomSoundId", "ID")
+    Slider(pFx, "Громкость", S.Misc, "SoundVol", 0.2, 3, 0.1, "")
+    Toggle(pFx, "Глушить родные звуки оружия", S.Misc, "MuteGun")
+    Button(pFx, "Проиграть звук", function() playShotSound() end)
+    Section(pFx, "Попадания")
+    Toggle(pFx, "Хитмаркер", S.Misc, "Hitmarker", function(on)
+        if on then installTracerHook() end
+    end)
+    Cycle(pFx, "Звук попадания", S.Misc, "HitSound", HitOptions, function(v)
+        if v ~= "Off" then installTracerHook() end
+    end)
+
+    -- ---------- Вкладка: Движение ----------
+    local pMov = addTab("Движение")
+    Section(pMov, "Баннихоп")
+    Toggle(pMov, "Авто баннихоп", S.Misc, "Bhop", function(on)
+        if on then
+            local ch = myChar()
+            if not (ch and ch:FindFirstChildOfClass("Humanoid")) then
+                notify("Humanoid не найден — Настройки → Диагностика")
+            end
+        end
+    end)
+    Cycle(pMov, "Когда прыгать", S.Misc, "BhopMode", {
+        { "Always", "При движении" }, { "Constant", "Всегда" }, { "Space", "Пробел (ПК)" },
+    })
+    Cycle(pMov, "Метод прыжка", S.Misc, "BhopJump", { { "Humanoid", "Humanoid" }, { "Key", "Клавиша" } })
+    Toggle(pMov, "Ускорение в воздухе", S.Misc, "BhopBoost")
+    Slider(pMov, "Скорость баннихопа", S.Misc, "BhopSpeed", 16, 120, 1, "")
+    Section(pMov, "Скорость бега")
+    Toggle(pMov, "Увеличитель скорости", S.Misc, "Speed")
+    Cycle(pMov, "Способ", S.Misc, "SpeedMode", {
+        { "CFrame", "CFrame" }, { "WalkSpeed", "WalkSpeed" }, { "Velocity", "Velocity" },
+    })
+    Slider(pMov, "Скорость", S.Misc, "SpeedValue", 16, 150, 1, "")
+    Section(pMov, "Прочее")
+    Toggle(pMov, "Бесконечный прыжок", S.Misc, "InfJump")
+    Toggle(pMov, "Noclip", S.Misc, "Noclip")
+    Toggle(pMov, "Полёт", S.Misc, "Fly")
+    Slider(pMov, "Скорость полёта", S.Misc, "FlySpeed", 20, 150, 1, "")
+    Button(pMov, "Буст FPS (убрать эффекты)", function()
+        fpsBoost()
+        notify("Буст FPS применён")
+    end)
+
+    -- ---------- Вкладка: Настройки ----------
+    local pSet = addTab("Настройки")
+    Section(pSet, "Интерфейс")
+    Cycle(pSet, "Цвет темы", S, "Accent", PaletteOptions, function(i) setAccent(colorOf(i)) end)
+    Toggle(pSet, "Анти-AFK", S.Misc, "AntiAFK")
+    Section(pSet, "Действия")
+    Button(pSet, "Сбросить конфиг (файл)", function()
+        pcall(function()
+            if Cap.files and type(delfile) == "function" and isfile(CONFIG_FILE) then delfile(CONFIG_FILE) end
+        end)
+        notify("Конфиг удалён. Перезапусти скрипт.")
+    end)
+    Section(pSet, "Сканер моделей")
+    Toggle(pSet, "Показать все модели с Humanoid", S.Misc, "DbgModels")
+    Toggle(pSet, "Показать хитбоксы цели", S.Misc, "DbgHitbox")
+    Button(pSet, "Сканер моделей (в буфер обмена)", function()
+        local s = collectModelReport()
+        pcall(function() if setclipboard then setclipboard(s) end end)
+        print("[Claude] Сканер моделей:\n" .. s)
+        notify(setclipboard and "Отчёт скопирован" or "Отчёт в консоли (F9)")
+    end)
+    Button(pSet, "Диагностика (в буфер обмена)", function()
+        local s = collectDiag()
+        pcall(function() if setclipboard then setclipboard(s) end end)
+        print("[Claude] Диагностика:\n" .. s)
+        notify(setclipboard and "Диагностика скопирована" or "Диагностика в консоли (F9)")
+    end)
+    Button(pSet, "Перезайти на сервер", function()
+        pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
+    end)
+    Button(pSet, "Выгрузить Claude", function()
+        if env.ClaudeCleanup then env.ClaudeCleanup() end
+    end)
+    Label(pSet, "Executor: " .. Cap.Executor .. "  •  mousemoverel: " .. (Cap.mousemoverel and "да" or "нет")
+        .. "  •  mouse1click: " .. (Cap.mouse1click and "да" or "нет"))
+
+    selectTab("Аимбот")
+
+    -- ---------- Плавающая кнопка меню ----------
+    menuOpen = false
+    setMenu = function(open)
+        menuOpen = open
+        if not (Main and Main.Parent) then return end
+        if open then
+            Main.Visible = true
+            tween(Main, 0.25, { GroupTransparency = 0 })
+            tween(MainScale, 0.32, { Scale = 1 }, Enum.EasingStyle.Back)
+        else
+            tween(Main, 0.2, { GroupTransparency = 1 })
+            tween(MainScale, 0.2, { Scale = 0.88 })
+            task.delay(0.22, function()
+                if not menuOpen and Main and Main.Parent then Main.Visible = false end
+            end)
+        end
+    end
+    track(minBtn.Activated:Connect(function() setMenu(false) end))
+
+    local toggleBtn = new("TextButton", {
+        Name = "ClaudeToggle", Size = UDim2.fromOffset(Dev.btn, Dev.btn), Position = UDim2.new(0, 14, 0.32, 0),
+        BackgroundColor3 = Theme.BG, BackgroundTransparency = 0.1, BorderSizePixel = 0, Text = "C",
+        TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack, TextSize = Dev.btn * 0.5,
+        AutoButtonColor = false, Parent = UI,
+    }, { corner(999) })
+    local tbStroke = stroke(Theme.Accent, 2)
+    tbStroke.Parent = toggleBtn
+    accent(tbStroke, "Color")
+    makeDraggable(toggleBtn, toggleBtn, function() setMenu(not menuOpen) end)
+
+    -- ---------- Кнопка AIM для телефона ----------
+    if Dev.kind == "phone" then
+        local aimBtn = new("TextButton", {
+            Name = "ClaudeAim", Size = UDim2.fromOffset(78, 78), AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.84, 0, 0.55, 0), BackgroundColor3 = Theme.BG, BackgroundTransparency = 0.25,
+            BorderSizePixel = 0, Text = "AIM", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack,
+            TextSize = 18, AutoButtonColor = false, Parent = UI,
+        }, { corner(999) })
+        local abStroke = stroke(Theme.Accent, 2.5)
+        abStroke.Parent = aimBtn
+        accent(abStroke, "Color")
+        track(aimBtn.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                aimBtnHeld, aimBtnInput = true, input
+                tween(aimBtn, 0.1, { BackgroundTransparency = 0 })
+            end
+        end))
+        track(aimBtn.InputEnded:Connect(function(input)
+            if input == aimBtnInput or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                aimBtnHeld, aimBtnInput = false, nil
+                tween(aimBtn, 0.15, { BackgroundTransparency = 0.25 })
+            end
+        end))
+        task.spawn(function()
+            while Alive and aimBtn.Parent do
+                aimBtn.Visible = S.Aim.ShowButton and S.Aim.Enabled
+                task.wait(0.25)
+            end
+        end)
+    end
+end
+
+-- ============================================================
+-- 8. ИНТРО, ВЫБОР УСТРОЙСТВА, ЛОАДЕР
+-- ============================================================
+local function drawPhone(p)
+    local body = new("Frame", {
+        Size = UDim2.fromScale(0.48, 0.94), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = Color3.fromRGB(26, 26, 38), BorderSizePixel = 0, Parent = p,
+    }, { corner(10), stroke(Color3.fromRGB(225, 225, 240), 2) })
+    local scr = new("Frame", {
+        Size = UDim2.new(1, -10, 1, -20), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = body,
+    }, {
+        corner(6),
+        new("UIGradient", { Color = ColorSequence.new(Theme.Accent, Color3.fromRGB(70, 160, 255)), Rotation = 60 }),
+    })
+    new("Frame", {
+        Size = UDim2.new(0.3, 0, 0, 3), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 6),
+        BackgroundColor3 = Color3.fromRGB(90, 90, 110), BorderSizePixel = 0, Parent = body,
+    }, { corner(2) })
+    new("TextLabel", {
+        Size = UDim2.fromScale(0.6, 0.35), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.42),
+        BackgroundTransparency = 1, Text = "C", TextScaled = true, TextColor3 = Color3.new(1, 1, 1),
+        Font = Enum.Font.GothamBlack, Parent = scr,
+    })
+    for i = 0, 2 do
+        new("Frame", {
+            Size = UDim2.fromScale(0.2, 0.1), Position = UDim2.fromScale(0.12 + i * 0.28, 0.76),
+            BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.6, BorderSizePixel = 0, Parent = scr,
+        }, { corner(4) })
+    end
+end
+
+local function drawPC(p)
+    local mon = new("Frame", {
+        Size = UDim2.fromScale(0.98, 0.64), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.05),
+        BackgroundColor3 = Color3.fromRGB(26, 26, 38), BorderSizePixel = 0, Parent = p,
+    }, { corner(8), stroke(Color3.fromRGB(225, 225, 240), 2) })
+    local scr = new("Frame", {
+        Size = UDim2.new(1, -12, 1, -12), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = mon,
+    }, {
+        corner(4),
+        new("UIGradient", { Color = ColorSequence.new(Theme.Accent, Color3.fromRGB(70, 160, 255)), Rotation = 30 }),
+    })
+    new("TextLabel", {
+        Size = UDim2.fromScale(0.3, 0.6), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundTransparency = 1, Text = "C", TextScaled = true, TextColor3 = Color3.new(1, 1, 1),
+        Font = Enum.Font.GothamBlack, Parent = scr,
+    })
+    new("Frame", {
+        Size = UDim2.fromScale(0.1, 0.15), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.69),
+        BackgroundColor3 = Color3.fromRGB(150, 150, 170), BorderSizePixel = 0, Parent = p,
+    })
+    new("Frame", {
+        Size = UDim2.fromScale(0.46, 0.05), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.84),
+        BackgroundColor3 = Color3.fromRGB(190, 190, 210), BorderSizePixel = 0, Parent = p,
+    }, { corner(3) })
+end
+
+local function runLoader()
+    local cam = getCamera()
+    local vp = cam and cam.ViewportSize or Vector2.new(800, 400)
+    local gui = makeGui("ClaudeSplash", 1000)
+    local splashAlive = true
+
+    local root = new("CanvasGroup", {
+        Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+        GroupTransparency = 1, Parent = gui,
+    })
+    local bgGrad = new("UIGradient", {
+        Color = ColorSequence.new(Color3.fromRGB(8, 8, 16), Color3.fromRGB(32, 16, 54)), Rotation = 0, Parent = root,
+    })
+    tween(root, 0.5, { GroupTransparency = 0 })
+
+    task.spawn(function()
+        while splashAlive and Alive do
+            bgGrad.Rotation = (os.clock() * 18) % 360
+            task.wait()
+        end
+    end)
+
+    -- Частицы
+    for _ = 1, 18 do
+        task.spawn(function()
+            local s = math.random(2, 5)
+            local dot = new("Frame", {
+                Size = UDim2.fromOffset(s, s), BackgroundColor3 = Theme.Accent,
+                BackgroundTransparency = 0.3 + math.random() * 0.5, BorderSizePixel = 0,
+                Position = UDim2.fromScale(math.random(), math.random()), Parent = root,
+            }, { corner(5) })
+            while splashAlive and Alive and dot.Parent do
+                local t = math.random(60, 120) / 10
+                tween(dot, t, { Position = UDim2.new(dot.Position.X.Scale, 0, -0.1, 0) }, Enum.EasingStyle.Linear)
+                task.wait(t)
+                dot.Position = UDim2.fromScale(math.random(), 1.1)
+            end
+        end)
+    end
+
+    -- Логотип
+    local word = "CLAUDE"
+    local sz = math.clamp(math.floor(vp.Y * 0.16), 40, 80)
+    local group = new("Frame", {
+        BackgroundTransparency = 1, Size = UDim2.fromOffset(sz * 0.8 * #word + 20, sz * 1.2 + 50),
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Parent = root,
+    }, { new("UIScale", { Name = "Sc" }) })
+    local groupScale = group:FindFirstChild("Sc")
+    local letters = new("Frame", {
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, sz * 1.2), Parent = group,
+    }, {
+        new("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+    })
+    for i = 1, #word do
+        local holder = new("Frame", {
+            BackgroundTransparency = 1, Size = UDim2.fromOffset(sz * 0.8, sz * 1.2), LayoutOrder = i, Parent = letters,
+        })
+        local lbl = new("TextLabel", {
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 30),
+            Text = word:sub(i, i), TextColor3 = Color3.new(1, 1, 1), TextTransparency = 1,
+            Font = Enum.Font.GothamBlack, TextSize = sz, Parent = holder,
+        }, {
+            new("UIGradient", { Color = ColorSequence.new(Theme.Accent, Color3.fromRGB(90, 200, 255)), Rotation = 90 }),
+        })
+        task.delay((i - 1) * 0.09, function()
+            tween(lbl, 0.55, { Position = UDim2.fromOffset(0, 0), TextTransparency = 0 }, Enum.EasingStyle.Back)
+        end)
+    end
+    local line = new("Frame", {
+        Size = UDim2.new(0, 0, 0, 2), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, sz * 1.2 + 4),
+        BorderSizePixel = 0, Parent = group,
+    }, { corner(1) })
+    accent(line, "BackgroundColor3")
+    local tag = new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 20), Position = UDim2.new(0, 0, 0, sz * 1.2 + 12), BackgroundTransparency = 1,
+        Text = "B L O X   S T R I K E   •   E D I T I O N", TextColor3 = Theme.Sub, TextTransparency = 1,
+        Font = Enum.Font.GothamMedium, TextSize = 13, Parent = group,
+    })
+    task.wait(0.7)
+    tween(line, 0.7, { Size = UDim2.new(0.75, 0, 0, 2) }, Enum.EasingStyle.Quint)
+    tween(tag, 0.7, { TextTransparency = 0 })
+    task.wait(1.6)
+
+    -- Логотип уезжает наверх
+    tween(group, 0.8, { Position = UDim2.fromScale(0.5, 0.19) }, Enum.EasingStyle.Quint)
+    tween(groupScale, 0.8, { Scale = 0.55 }, Enum.EasingStyle.Quint)
+    task.wait(0.6)
+
+    -- ---------- Выбор устройства ----------
+    local devFrame = new("CanvasGroup", {
+        BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), GroupTransparency = 1, Parent = root,
+    })
+    new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 24), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.36),
+        BackgroundTransparency = 1, Text = "ВЫБЕРИ УСТРОЙСТВО", TextColor3 = Theme.Text,
+        Font = Enum.Font.GothamBold, TextSize = 18, Parent = devFrame,
+    })
+    local ch = math.clamp(math.floor(vp.Y * 0.44), 150, 240)
+    local cw = math.floor(ch * 0.95)
+    local choice
+    local cards = {}
+
+    local function makeCard(kind, name, desc, xs)
+        local card = new("Frame", {
+            Size = UDim2.fromOffset(cw, ch), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(xs, 0, 0.66, 0),
+            BackgroundColor3 = Color3.fromRGB(20, 20, 32), BorderSizePixel = 0, Parent = devFrame,
+        }, {
+            corner(16),
+            new("UIStroke", { Name = "St", Color = Color3.fromRGB(60, 60, 90), Thickness = 2 }),
+            new("UIScale", { Name = "Sc" }),
+        })
+        local st, sc = card:FindFirstChild("St"), card:FindFirstChild("Sc")
+        local icon = new("Frame", {
+            BackgroundTransparency = 1, Size = UDim2.fromOffset(ch * 0.58, ch * 0.58), AnchorPoint = Vector2.new(0.5, 0),
+            Position = UDim2.new(0.5, 0, 0, ch * 0.07), Parent = card,
+        })
+        if kind == "phone" then drawPhone(icon) else drawPC(icon) end
+        new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, ch * 0.14), Position = UDim2.new(0, 0, 1, -ch * 0.3), BackgroundTransparency = 1,
+            Text = name, TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 18, Parent = card,
+        })
+        local isSug = (kind == suggested)
+        new("TextLabel", {
+            Size = UDim2.new(1, -10, 0, ch * 0.12), Position = UDim2.new(0, 5, 1, -ch * 0.16), BackgroundTransparency = 1,
+            Text = isSug and "★ Рекомендуется" or desc, TextColor3 = isSug and Theme.Accent or Theme.Sub,
+            Font = Enum.Font.GothamMedium, TextSize = 12, TextWrapped = true, Parent = card,
+        })
+        local btn = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", Parent = card })
+        track(btn.MouseEnter:Connect(function()
+            tween(st, 0.15, { Color = Theme.Accent })
+            tween(sc, 0.15, { Scale = 1.04 })
+        end))
+        track(btn.MouseLeave:Connect(function()
+            if choice then return end
+            tween(st, 0.15, { Color = Color3.fromRGB(60, 60, 90) })
+            tween(sc, 0.15, { Scale = 1 })
+        end))
+        track(btn.Activated:Connect(function()
+            if choice then return end
+            choice = kind
+            tween(st, 0.15, { Color = Theme.Accent })
+            tween(sc, 0.15, { Scale = 1.09 }, Enum.EasingStyle.Back)
+        end))
+        cards[kind] = card
+    end
+    makeCard("phone", "Телефон", "Крупные кнопки и AIM", 0.3)
+    makeCard("pc", "ПК", "Мышь и клавиши", 0.7)
+    tween(devFrame, 0.5, { GroupTransparency = 0 })
+
+    repeat task.wait(0.05) until choice or not Alive
+    if not Alive then return end
+    applyDevice(choice)
+    S.Device = choice
+    saveConfig()
+    local other = (choice == "phone") and "pc" or "phone"
+    tween(cards[other], 0.4, { Position = UDim2.new(cards[other].Position.X.Scale, 0, 1.4, 0) })
+    task.wait(0.55)
+    tween(devFrame, 0.4, { GroupTransparency = 1 })
+    task.wait(0.45)
+    devFrame:Destroy()
+
+    -- ---------- Лоадер ----------
+    local barW = math.clamp(math.floor(vp.X * 0.5), 260, 420)
+    local loadFrame = new("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = root })
+    local status = new("TextLabel", {
+        Size = UDim2.fromOffset(barW + 80, 22), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.52),
+        BackgroundTransparency = 1, Text = "Запуск...", TextColor3 = Theme.Text, Font = Enum.Font.GothamMedium,
+        TextSize = 16, Parent = loadFrame,
+    })
+    local barBg = new("Frame", {
+        Size = UDim2.fromOffset(barW, 8), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.6),
+        BackgroundColor3 = Color3.fromRGB(32, 32, 48), BorderSizePixel = 0, Parent = loadFrame,
+    }, { corner(4) })
+    local barFill = new("Frame", {
+        Size = UDim2.fromScale(0, 1), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = barBg,
+    }, {
+        corner(4),
+        new("UIGradient", { Color = ColorSequence.new(Theme.Accent, Color3.fromRGB(90, 200, 255)) }),
+    })
+    local pct = new("TextLabel", {
+        Size = UDim2.fromOffset(80, 18), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.66),
+        BackgroundTransparency = 1, Text = "0%", TextColor3 = Theme.Accent, Font = Enum.Font.GothamBold,
+        TextSize = 14, Parent = loadFrame,
+    })
+    local logBox = new("Frame", {
+        Size = UDim2.fromOffset(barW, 70), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.71),
+        BackgroundTransparency = 1, ClipsDescendants = true, Parent = loadFrame,
+    }, { new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Bottom }) })
+    local logN = 0
+    local function log(text, ok)
+        logN += 1
+        local l = new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1, LayoutOrder = logN,
+            Text = (ok == false and "✗  " or "✓  ") .. text, TextColor3 = (ok == false) and Color3.fromRGB(255, 110, 110) or Theme.Sub,
+            Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, TextTransparency = 1,
+            Parent = logBox,
+        })
+        tween(l, 0.25, { TextTransparency = 0 })
+        local kids = {}
+        for _, k in ipairs(logBox:GetChildren()) do
+            if k:IsA("TextLabel") then kids[#kids + 1] = k end
+        end
+        table.sort(kids, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+        while #kids > 4 do
+            table.remove(kids, 1):Destroy()
+        end
+    end
+
+    local gameName = "Roblox"
+    local steps = {
+        { "Loading assets • сервисы Roblox", function()
+            return Players and RunService and TweenService and UserInputService and true
+        end },
+        { "Loading assets • тема и шрифты", function() return true end },
+        { "Loading assets • данные игры", function()
+            local ok, info = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId) end)
+            if ok and info and info.Name then gameName = info.Name end
+            return true, "Игра: " .. gameName
+        end },
+        { "Loading functions • API экзекьютора", function()
+            return true, Cap.Executor .. " • mousemoverel " .. (Cap.mousemoverel and "OK" or "нет")
+                .. " • mouse1click " .. (Cap.mouse1click and "OK" or "нет")
+        end },
+        { "Loading functions • конфиг", function()
+            return true, configLoaded and "Конфиг загружен" or "Новый конфиг"
+        end },
+        { "Loading functions • сканер моделей", function()
+            startModelTracking()
+            return true, "Моделей с Humanoid: " .. modelCount()
+        end },
+        { "Loading functions • ESP, радар, прицел", function() buildOverlay() return true end },
+        { "Loading functions • аимбот и триггербот", function() startLoops() return true end },
+        { "Building menu • интерфейс", function() buildMenu() return true end },
+    }
+
+    for i, step in ipairs(steps) do
+        status.Text = step[1] .. "..."
+        local ok, res, extra = pcall(step[2])
+        if ok and res then
+            log(extra or step[1], true)
+        else
+            log(step[1] .. " — ошибка", false)
+            warn("[Claude] " .. step[1] .. ": " .. tostring(res))
+        end
+        local a = i / #steps
+        tween(barFill, 0.35, { Size = UDim2.fromScale(a, 1) })
+        pct.Text = math.floor(a * 100) .. "%"
+        task.wait(0.32)
+    end
+    status.Text = "Готово!"
+    task.wait(0.6)
+
+    splashAlive = false
+    tween(root, 0.6, { GroupTransparency = 1 })
+    task.wait(0.65)
+    gui:Destroy()
+
+    if setMenu then setMenu(true) end
+    notify("Claude загружен • нажми C, чтобы скрыть меню", 3.5)
+end
+
+-- ============================================================
+-- 9. ОЧИСТКА И ЗАПУСК
+-- ============================================================
+local function cleanup()
+    Alive = false
+    pcall(function() RunService:UnbindFromRenderStep("ClaudeAim") end)
+    pcall(function() RunService:UnbindFromRenderStep("ClaudeVis") end)
+    for _, c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
+    table.clear(Conns)
+    for _, r in ipairs(Roots) do pcall(function() r:Destroy() end) end
+    table.clear(Roots)
+    pcall(restoreLight)
+    pcall(restoreSky)
+    pcall(restoreHands)
+    pcall(restoreMute)
+    pcall(restoreMovement)
+    pcall(function()
+        if auraHL then auraHL:Destroy() end
+        if auraPE then auraPE:Destroy() end
+    end)
+    env.ClaudeOnRay = nil
+    pcall(function()
+        local cam = getCamera()
+        if cam and origFOV and fovApplied then cam.FieldOfView = origFOV end
+    end)
+    env.ClaudeCleanup = nil
+end
+env.ClaudeCleanup = cleanup
+
+task.spawn(function()
+    local ok, err = pcall(runLoader)
+    if not ok then
+        warn("[Claude] Ошибка лоадера: " .. tostring(err))
+        -- Запасной запуск без красивого интро
+        pcall(function()
+            startModelTracking()
+            if not Overlay then buildOverlay() end
+            if not Main then
+                startLoops()
+                buildMenu()
+            end
+            if setMenu then setMenu(true) end
+        end)
+    end
+end)
